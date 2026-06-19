@@ -168,7 +168,14 @@ def add(url_or_path: str, name: str | None) -> None:  # noqa: D401
         click.echo("No markdown files found.")
     else:
         click.echo(f"Found {total_md} markdown file(s) ...")
-        cache = sync.sync_repo(repo_config, config, cache)
+        try:
+            cache = sync.sync_repo(repo_config, config, cache)
+        except Exception as e:
+            raise click.ClickException(
+                f"Translation engine unavailable: {e}\n"
+                f"Check 'repo-translator config' (translator.engine/api_key) "
+                f"and retry with 'repo-translator translate {repo_name}'."
+            ) from e
         cache_manager.save(DEFAULT_CACHE_PATH, cache)
         succeeded = len(cache.get(repo_name, {}))
         click.echo(f"[{succeeded}/{total_md}] Done.")
@@ -218,7 +225,13 @@ def translate(name: str) -> None:
         return
 
     old_count = len(cache.get(name, {}))
-    cache = sync.sync_repo(repo_config, config, cache)
+    try:
+        cache = sync.sync_repo(repo_config, config, cache)
+    except Exception as e:
+        raise click.ClickException(
+            f"Translation engine unavailable: {e}\n"
+            f"Check 'repo-translator config' (translator.engine/api_key)."
+        ) from e
     cache_manager.save(DEFAULT_CACHE_PATH, cache)
     new_count = len(cache.get(name, {}))
 
