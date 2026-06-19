@@ -67,7 +67,7 @@ def test_add_url_clones_and_syncs(tmp_path: Path, runner: CliRunner) -> None:
     config_path, cache_path = _setup_temp_paths(tmp_path)
 
     with patch("repo_translator.config.DEFAULT_CONFIG_PATH", config_path), \
-         patch("repo_translator.cli.DEFAULT_CACHE_PATH", cache_path), \
+         patch("repo_translator.cache_manager.DEFAULT_CACHE_PATH", cache_path), \
          patch("repo_translator.cli.git_manager.clone") as mock_clone, \
          patch("repo_translator.cli.git_manager.get_file_blob_map",
                return_value=_fake_blob_map(["README.md", "docs/guide.md"])), \
@@ -126,7 +126,7 @@ def test_add_url_custom_name(tmp_path: Path, runner: CliRunner) -> None:
     config_path, cache_path = _setup_temp_paths(tmp_path)
 
     with patch("repo_translator.config.DEFAULT_CONFIG_PATH", config_path), \
-         patch("repo_translator.cli.DEFAULT_CACHE_PATH", cache_path), \
+         patch("repo_translator.cache_manager.DEFAULT_CACHE_PATH", cache_path), \
          patch("repo_translator.cli.git_manager.clone"), \
          patch("repo_translator.cli.git_manager.get_file_blob_map",
                return_value=_fake_blob_map(["README.md"])), \
@@ -159,7 +159,7 @@ def test_add_local_path_creates_path_entry(tmp_path: Path, runner: CliRunner) ->
     config_path, cache_path = _setup_temp_paths(tmp_path)
 
     with patch("repo_translator.config.DEFAULT_CONFIG_PATH", config_path), \
-         patch("repo_translator.cli.DEFAULT_CACHE_PATH", cache_path), \
+         patch("repo_translator.cache_manager.DEFAULT_CACHE_PATH", cache_path), \
          patch("repo_translator.cli.git_manager.clone") as mock_clone, \
          patch("repo_translator.cli.sync.sync_repo"), \
          patch("repo_translator.cli.cache_manager.save"):
@@ -239,7 +239,7 @@ def test_translate_existing_repo_calls_sync(
     save_config(config, config_path)
 
     with patch("repo_translator.config.DEFAULT_CONFIG_PATH", config_path), \
-         patch("repo_translator.cli.DEFAULT_CACHE_PATH", cache_path), \
+         patch("repo_translator.cache_manager.DEFAULT_CACHE_PATH", cache_path), \
          patch("repo_translator.cli.git_manager.clone_or_pull",
                return_value=tmp_path / "repos" / "myrepo") as mock_cp, \
          patch("repo_translator.cli.git_manager.get_file_blob_map",
@@ -349,7 +349,7 @@ def test_list_shows_managed_and_external(
     )
 
     with patch("repo_translator.config.DEFAULT_CONFIG_PATH", config_path), \
-         patch("repo_translator.cli.DEFAULT_CACHE_PATH", cache_path):
+         patch("repo_translator.cache_manager.DEFAULT_CACHE_PATH", cache_path):
 
         result = runner.invoke(main, ["list"])
 
@@ -366,7 +366,7 @@ def test_list_empty_shows_message(tmp_path: Path, runner: CliRunner) -> None:
     save_config(AppConfig(), config_path)
 
     with patch("repo_translator.config.DEFAULT_CONFIG_PATH", config_path), \
-         patch("repo_translator.cli.DEFAULT_CACHE_PATH", cache_path):
+         patch("repo_translator.cache_manager.DEFAULT_CACHE_PATH", cache_path):
 
         result = runner.invoke(main, ["list"])
 
@@ -523,6 +523,93 @@ def test_config_get_and_set_together_fails(
 
     assert result.exit_code != 0
     assert "Cannot use --get and --set together" in result.output
+
+
+# ---------------------------------------------------------------------------
+# watch
+# ---------------------------------------------------------------------------
+
+
+def test_watch_calls_run_watch_with_default_interval(
+    tmp_path: Path, runner: CliRunner
+) -> None:
+    """watch with no --interval passes None through to run_watch."""
+    config_path, _ = _setup_temp_paths(tmp_path)
+    save_config(
+        AppConfig(repos=[RepoConfig(name="r", url="https://example.com/r.git")]),
+        config_path,
+    )
+
+    with patch("repo_translator.config.DEFAULT_CONFIG_PATH", config_path), \
+         patch("repo_translator.cli.scheduler.run_watch") as mock_run_watch:
+        result = runner.invoke(main, ["watch"])
+
+    assert result.exit_code == 0, result.output
+    mock_run_watch.assert_called_once()
+    args = mock_run_watch.call_args[0]
+    assert args[1] is None
+    assert "Watching 1 repo(s)" in result.output
+
+
+def test_watch_parses_interval_with_h_suffix(
+    tmp_path: Path, runner: CliRunner
+) -> None:
+    """watch --interval 6h overrides the configured interval."""
+    config_path, _ = _setup_temp_paths(tmp_path)
+    save_config(AppConfig(), config_path)
+
+    with patch("repo_translator.config.DEFAULT_CONFIG_PATH", config_path), \
+         patch("repo_translator.cli.scheduler.run_watch") as mock_run_watch:
+        result = runner.invoke(main, ["watch", "--interval", "6h"])
+
+    assert result.exit_code == 0, result.output
+    mock_run_watch.assert_called_once()
+    assert mock_run_watch.call_args[0][1] == 6
+    assert "Next check in 6h" in result.output
+
+
+def test_watch_rejects_zero_interval(tmp_path: Path, runner: CliRunner) -> None:
+    """watch --interval 0 is rejected rather than silently falling back."""
+    config_path, _ = _setup_temp_paths(tmp_path)
+    save_config(AppConfig(), config_path)
+
+    with patch("repo_translator.config.DEFAULT_CONFIG_PATH", config_path), \
+         patch("repo_translator.cli.scheduler.run_watch") as mock_run_watch:
+        result = runner.invoke(main, ["watch", "--interval", "0"])
+
+    assert result.exit_code != 0
+    mock_run_watch.assert_not_called()
+    assert "positive" in result.output.lower()
+
+
+def test_watch_rejects_negative_interval(tmp_path: Path, runner: CliRunner) -> None:
+    """watch --interval -1 is rejected."""
+    config_path, _ = _setup_temp_paths(tmp_path)
+    save_config(AppConfig(), config_path)
+
+    with patch("repo_translator.config.DEFAULT_CONFIG_PATH", config_path), \
+         patch("repo_translator.cli.scheduler.run_watch") as mock_run_watch:
+        result = runner.invoke(main, ["watch", "--interval", "-1"])
+
+    assert result.exit_code != 0
+    mock_run_watch.assert_not_called()
+    assert "positive" in result.output.lower()
+
+
+def test_watch_rejects_unparseable_interval(
+    tmp_path: Path, runner: CliRunner
+) -> None:
+    """watch --interval bogus raises a clean error."""
+    config_path, _ = _setup_temp_paths(tmp_path)
+    save_config(AppConfig(), config_path)
+
+    with patch("repo_translator.config.DEFAULT_CONFIG_PATH", config_path), \
+         patch("repo_translator.cli.scheduler.run_watch") as mock_run_watch:
+        result = runner.invoke(main, ["watch", "--interval", "bogus"])
+
+    assert result.exit_code != 0
+    mock_run_watch.assert_not_called()
+    assert "Invalid --interval value" in result.output
 
 
 # ---------------------------------------------------------------------------

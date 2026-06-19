@@ -19,6 +19,7 @@ dependencies = [
     "anthropic",
     "apscheduler",
     "rich",
+    "pathspec",
     "pyyaml>=6.0.3",
 ]
 
