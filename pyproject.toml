@@ -19,6 +19,7 @@ dependencies = [
     "anthropic",
     "apscheduler",
     "rich",
+    "pathspec",
 ]
 
 [project.optional-dependencies]

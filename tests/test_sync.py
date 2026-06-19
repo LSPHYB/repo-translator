@@ -750,7 +750,7 @@ def test_sync_managed_repo_end_to_end(tmp_path: Path) -> None:
     assert (output_repo / "docs/guide.md").exists()
     assert (output_repo / "docs/guide_zh.md").exists()
 
-    mock_translator.translate_file.call_count == 2
+    assert mock_translator.translate_file.call_count == 2
 
     # Verify cache
     assert "managed-repo" in cache

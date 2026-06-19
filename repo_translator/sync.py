@@ -11,12 +11,13 @@ responsible for calling `cache_manager.save()` when appropriate.
 
 from __future__ import annotations
 
-import fnmatch
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+import pathspec
 
 from repo_translator import cache_manager
 from repo_translator.git_manager import (
@@ -124,19 +125,36 @@ def sync_repo(repo_config: RepoConfig, app_config: AppConfig, cache: dict) -> di
             )
             future_to_path[future] = file_path
 
-        for future in as_completed(future_to_path):
-            file_path = future_to_path[future]
-            try:
-                success = future.result()
-                results.append((file_path, success))
-            except Exception:
-                logger.warning(
-                    "Unexpected error processing %r in repo %r",
-                    file_path,
-                    repo_config.name,
-                    exc_info=True,
-                )
-                results.append((file_path, False))
+        try:
+            for future in as_completed(future_to_path, timeout=600):
+                file_path = future_to_path[future]
+                try:
+                    success = future.result()
+                    results.append((file_path, success))
+                except Exception:
+                    logger.warning(
+                        "Unexpected error processing %r in repo %r",
+                        file_path,
+                        repo_config.name,
+                        exc_info=True,
+                    )
+                    results.append((file_path, False))
+        except TimeoutError:
+            logger.warning(
+                "Sync repo %r: timed out waiting for futures to complete",
+                repo_config.name,
+            )
+
+        # Handle any futures that did not complete within the timeout
+        remaining = [f for f in future_to_path if not f.done()]
+        if remaining:
+            logger.warning(
+                "Sync repo %r: %d future(s) did not complete, cancelling",
+                repo_config.name,
+                len(remaining),
+            )
+            for f in remaining:
+                f.cancel()
 
     # 5. Update cache for successfully processed files
     now = datetime.now(timezone.utc).isoformat()
@@ -165,13 +183,23 @@ def sync_repo(repo_config: RepoConfig, app_config: AppConfig, cache: dict) -> di
 
 
 def _is_excluded(file_path: str, patterns: list[str]) -> bool:
-    """Return True if *file_path* matches any glob in *patterns* via fnmatch."""
-    for pat in patterns:
-        if fnmatch.fnmatch(file_path, pat):
-            logger.info(
-                "Skipping %r (matches exclude pattern %r)", file_path, pat
-            )
-            return True
+    """Return True if *file_path* matches any glob in *patterns*.
+
+    Uses ``pathspec`` with gitwildmatch syntax, which implements real
+    ``.gitignore``-style matching: ``*`` does NOT cross directory
+    boundaries, ``**`` matches zero or more directories.
+    """
+    spec = pathspec.PathSpec.from_lines("gitignore", patterns)
+    if spec.match_file(file_path):
+        # Re-scan to find which pattern matched (for logging).
+        for pat in patterns:
+            sub = pathspec.PathSpec.from_lines("gitignore", [pat])
+            if sub.match_file(file_path):
+                logger.info(
+                    "Skipping %r (matches exclude pattern %r)", file_path, pat
+                )
+                break
+        return True
     return False
 
 
