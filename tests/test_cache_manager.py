@@ -1,0 +1,279 @@
+"""Tests for repo_translator.cache_manager."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from repo_translator.cache_manager import get_changed_files, load, save, update
+
+
+def test_load_returns_empty_dict_when_file_missing(tmp_path: Path) -> None:
+    cache_path = tmp_path / "cache.json"
+
+    assert load(cache_path) == {}
+
+
+def test_load_parses_existing_json_file(tmp_path: Path) -> None:
+    cache_path = tmp_path / "cache.json"
+    data = {
+        "langchain": {
+            "README.md": {
+                "blob_hash": "abc123",
+                "translated_at": "2026-06-12T10:30:00Z",
+            }
+        }
+    }
+    cache_path.write_text(json.dumps(data), encoding="utf-8")
+
+    assert load(cache_path) == data
+
+
+def test_save_then_load_round_trips(tmp_path: Path) -> None:
+    cache_path = tmp_path / "cache.json"
+    data = {
+        "langchain": {
+            "README.md": {
+                "blob_hash": "abc123",
+                "translated_at": "2026-06-12T10:30:00Z",
+            },
+            "docs/intro.md": {
+                "blob_hash": "def456",
+                "translated_at": "2026-06-12T10:31:00Z",
+            },
+        }
+    }
+
+    save(cache_path, data)
+    loaded = load(cache_path)
+
+    assert loaded == data
+
+
+def test_save_creates_parent_directories(tmp_path: Path) -> None:
+    cache_path = tmp_path / "nested" / "dir" / "cache.json"
+
+    save(cache_path, {"repo": {}})
+
+    assert cache_path.exists()
+    assert load(cache_path) == {"repo": {}}
+
+
+def test_save_writes_non_ascii_content_readable(tmp_path: Path) -> None:
+    cache_path = tmp_path / "cache.json"
+    data = {"repo": {"文档.md": {"blob_hash": "abc", "translated_at": "now"}}}
+
+    save(cache_path, data)
+
+    assert load(cache_path) == data
+    # Confirm it's written as readable UTF-8, not escaped \uXXXX sequences.
+    raw = cache_path.read_text(encoding="utf-8")
+    assert "文档.md" in raw
+
+
+def test_get_changed_files_first_translation_returns_all_md_files() -> None:
+    file_blob_map = {
+        "README.md": "hash1",
+        "docs/intro.md": "hash2",
+        "script.py": "hash3",
+    }
+    cache: dict = {}
+
+    changed = get_changed_files("langchain", file_blob_map, cache)
+
+    assert set(changed) == {"README.md", "docs/intro.md"}
+
+
+def test_get_changed_files_skips_files_with_unchanged_hash() -> None:
+    file_blob_map = {
+        "README.md": "hash1",
+        "docs/intro.md": "hash2",
+    }
+    cache = {
+        "langchain": {
+            "README.md": {
+                "blob_hash": "hash1",
+                "translated_at": "2026-06-12T10:30:00Z",
+            },
+            "docs/intro.md": {
+                "blob_hash": "hash2",
+                "translated_at": "2026-06-12T10:31:00Z",
+            },
+        }
+    }
+
+    changed = get_changed_files("langchain", file_blob_map, cache)
+
+    assert changed == []
+
+
+def test_get_changed_files_detects_hash_change_for_some_files() -> None:
+    file_blob_map = {
+        "README.md": "hash1_new",  # changed
+        "docs/intro.md": "hash2",  # unchanged
+        "docs/new_file.md": "hash3",  # never seen before
+    }
+    cache = {
+        "langchain": {
+            "README.md": {
+                "blob_hash": "hash1_old",
+                "translated_at": "2026-06-12T10:30:00Z",
+            },
+            "docs/intro.md": {
+                "blob_hash": "hash2",
+                "translated_at": "2026-06-12T10:31:00Z",
+            },
+        }
+    }
+
+    changed = get_changed_files("langchain", file_blob_map, cache)
+
+    assert set(changed) == {"README.md", "docs/new_file.md"}
+
+
+def test_get_changed_files_ignores_non_md_files_on_first_translation() -> None:
+    file_blob_map = {
+        "script.py": "hash1",
+        "notes.txt": "hash2",
+    }
+    cache: dict = {}
+
+    changed = get_changed_files("langchain", file_blob_map, cache)
+
+    assert changed == []
+
+
+def test_get_changed_files_ignores_non_md_files_when_changed() -> None:
+    file_blob_map = {
+        "README.md": "hash1",
+        "script.py": "hash_changed",
+    }
+    cache = {
+        "langchain": {
+            "README.md": {
+                "blob_hash": "hash1",
+                "translated_at": "2026-06-12T10:30:00Z",
+            },
+            "script.py": {
+                "blob_hash": "hash_old",
+                "translated_at": "2026-06-12T10:30:00Z",
+            },
+        }
+    }
+
+    changed = get_changed_files("langchain", file_blob_map, cache)
+
+    assert changed == []
+
+
+def test_get_changed_files_other_repo_unaffected_by_unrelated_cache() -> None:
+    file_blob_map = {"README.md": "hash1"}
+    cache = {
+        "other-repo": {
+            "README.md": {"blob_hash": "hash1", "translated_at": "2026-06-12T10:30:00Z"}
+        }
+    }
+
+    changed = get_changed_files("langchain", file_blob_map, cache)
+
+    assert changed == ["README.md"]
+
+
+def test_update_adds_new_record_to_empty_cache() -> None:
+    cache: dict = {}
+
+    result = update(cache, "langchain", "README.md", "hash1", "2026-06-12T10:30:00Z")
+
+    assert result == {
+        "langchain": {
+            "README.md": {
+                "blob_hash": "hash1",
+                "translated_at": "2026-06-12T10:30:00Z",
+            }
+        }
+    }
+    # Mutates and returns the same object.
+    assert result is cache
+
+
+def test_update_overwrites_existing_record() -> None:
+    cache = {
+        "langchain": {
+            "README.md": {
+                "blob_hash": "old_hash",
+                "translated_at": "2026-06-12T10:30:00Z",
+            }
+        }
+    }
+
+    update(cache, "langchain", "README.md", "new_hash", "2026-06-13T09:00:00Z")
+
+    assert cache["langchain"]["README.md"] == {
+        "blob_hash": "new_hash",
+        "translated_at": "2026-06-13T09:00:00Z",
+    }
+
+
+def test_update_preserves_other_files_and_repos() -> None:
+    cache = {
+        "langchain": {
+            "README.md": {"blob_hash": "hash1", "translated_at": "t1"},
+        },
+        "other-repo": {
+            "docs.md": {"blob_hash": "hashX", "translated_at": "tX"},
+        },
+    }
+
+    update(cache, "langchain", "docs/intro.md", "hash2", "t2")
+
+    assert cache["langchain"]["README.md"] == {
+        "blob_hash": "hash1",
+        "translated_at": "t1",
+    }
+    assert cache["langchain"]["docs/intro.md"] == {
+        "blob_hash": "hash2",
+        "translated_at": "t2",
+    }
+    assert cache["other-repo"]["docs.md"] == {
+        "blob_hash": "hashX",
+        "translated_at": "tX",
+    }
+
+
+def test_end_to_end_first_translation_then_partial_rechange(tmp_path: Path) -> None:
+    """Integration scenario combining load/save/get_changed_files/update:
+
+    1. First translation of a repo: all .md files are "changed".
+    2. After translating and updating+saving the cache, a second diff with
+       the same blob map yields no changed files.
+    3. Changing one file's hash makes only that file "changed" again.
+    """
+    cache_path = tmp_path / "cache.json"
+    repo_name = "langchain"
+
+    file_blob_map = {
+        "README.md": "hash1",
+        "docs/intro.md": "hash2",
+        "script.py": "hash3",
+    }
+
+    # 1. First translation: cache.json doesn't exist yet.
+    cache = load(cache_path)
+    changed = get_changed_files(repo_name, file_blob_map, cache)
+    assert set(changed) == {"README.md", "docs/intro.md"}
+
+    for path in changed:
+        cache = update(cache, repo_name, path, file_blob_map[path], "2026-06-12T10:30:00Z")
+    save(cache_path, cache)
+
+    # 2. Second run, nothing changed upstream.
+    cache_reloaded = load(cache_path)
+    changed_again = get_changed_files(repo_name, file_blob_map, cache_reloaded)
+    assert changed_again == []
+
+    # 3. One file's content (and thus blob hash) changes.
+    file_blob_map_v2 = dict(file_blob_map)
+    file_blob_map_v2["docs/intro.md"] = "hash2_v2"
+
+    changed_v2 = get_changed_files(repo_name, file_blob_map_v2, cache_reloaded)
+    assert changed_v2 == ["docs/intro.md"]
