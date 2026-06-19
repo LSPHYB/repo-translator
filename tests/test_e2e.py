@@ -5,7 +5,8 @@ repo (added by local path, so no network clone happens), with everything
 else (parsing, marker embed/extract/splice, cache diffing, output writing)
 running for real. Only the LLM call (`create_translator`) is faked.
 
-Patterns reused from existing tests (do not reinvent):
+Patterns adapted from existing tests (duplicated here, not imported, to keep
+this file standalone):
 - `_setup_temp_paths` / config+cache patching: tests/test_cli.py
 - `_init_repo_with_files` (subprocess git init+commit): tests/test_sync.py
 - `_make_fake_translate_file` (marker-preserving fake translation):

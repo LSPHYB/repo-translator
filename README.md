@@ -97,7 +97,7 @@ repo-translator add <url-or-path> [--name NAME]
 
 `add` 同时支持两种来源，工具会根据参数形态自动判断：
 
-- **managed（托管）**：传入一个 URL（`http(s)://...` 或 `git@...`）。工具会 `git clone` 到 `~/.repo-translator/repos/<name>/`，并标记为 managed；之后每次 `translate`/`watch` 都会先对这份专属副本执行 `git pull`。
+- **managed（托管）**：传入一个 URL（`http(s)://...` 或 `git@...`）。工具会 `git clone` 到 `<output.base_dir>/repos/<name>/`（默认即 `~/.repo-translator/output/repos/<name>/`），并标记为 managed；之后每次 `translate`/`watch` 都会先对这份专属副本执行 `git pull`。
 
   ```bash
   repo-translator add https://github.com/langchain-ai/langchain
@@ -169,16 +169,16 @@ repo-translator config --set translator.api_key=sk-xxx
 
 ## 输出目录结构
 
-每个仓库的翻译产物位于 `output.base_dir`（默认 `~/.repo-translator/output/`）下以仓库名命名的子目录中，目录结构与源仓库镜像一致（命中 `output.exclude` 的文件除外）：
+每个仓库的翻译产物位于 `output.base_dir`（默认 `~/.repo-translator/output/`）下以仓库名命名的子目录中，目录结构与源仓库镜像一致（命中 `output.exclude` 的文件除外）。managed 仓库的本地克隆也存放在 `output.base_dir` 之下（`repos/<name>/`），与该仓库的翻译产物（`<name>/`）是同级目录：
 
 ```
 ~/.repo-translator/
 ├── config.yaml
 ├── cache.json                # blob hash 缓存，增量翻译依据
-├── repos/                    # managed 仓库的本地克隆
-│   └── langchain/
-└── output/
-    └── langchain/
+└── output/                   # output.base_dir（默认值）
+    ├── repos/                # managed 仓库的本地克隆
+    │   └── langchain/
+    └── langchain/             # 该仓库的翻译产物
         ├── README.md         # 原文（拷贝，只读）
         ├── README_zh.md      # 翻译后的中文版
         └── docs/
