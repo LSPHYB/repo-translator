@@ -67,6 +67,25 @@ def test_get_file_blob_map_returns_path_to_hash(tmp_path: Path) -> None:
     assert blob_map["README.md"] == result.stdout.strip()
 
 
+def test_get_file_blob_map_handles_non_ascii_filenames(tmp_path: Path) -> None:
+    repo_dir = tmp_path / "repo"
+    _init_repo_with_files(
+        repo_dir,
+        {
+            "文档.md": "hello\n",
+            "README.md": "world\n",
+        },
+    )
+
+    blob_map = get_file_blob_map(repo_dir)
+
+    assert "文档.md" in blob_map
+    assert set(blob_map.keys()) == {"文档.md", "README.md"}
+
+    md_files = list_md_files(blob_map)
+    assert set(md_files) == {"文档.md", "README.md"}
+
+
 def test_get_file_blob_map_empty_repo_with_no_commits_raises(tmp_path: Path) -> None:
     repo_dir = tmp_path / "empty_repo"
     repo_dir.mkdir()
@@ -205,6 +224,30 @@ def test_clone_or_pull_managed_repo_pulls_when_already_cloned(tmp_path: Path) ->
     mock_clone.assert_not_called()
     mock_pull.assert_called_once_with(dest)
     assert result == dest
+
+
+def test_clone_or_pull_recovers_from_stale_partial_dest(tmp_path: Path) -> None:
+    """A dest dir left behind by a previously interrupted clone (exists, but
+    no .git inside) must not permanently block future clone attempts."""
+    src_repo = tmp_path / "src"
+    _init_repo_with_files(src_repo, {"a.md": "content\n"})
+
+    repo_config = RepoConfig(name="managed-repo", url=str(src_repo))
+    repos_dir = tmp_path / "managed_repos"
+    dest = repos_dir / "managed-repo"
+
+    # Simulate a partial/interrupted clone: dest exists, non-empty, no .git.
+    dest.mkdir(parents=True)
+    (dest / "leftover.tmp").write_text("partial clone debris\n")
+    assert dest.exists()
+    assert not (dest / ".git").exists()
+
+    result = clone_or_pull(repo_config, repos_dir)
+
+    assert result == dest
+    assert (dest / ".git").exists()
+    assert (dest / "a.md").read_text() == "content\n"
+    assert not (dest / "leftover.tmp").exists()
 
 
 def test_clone_or_pull_managed_repo_end_to_end_real_git(tmp_path: Path) -> None:

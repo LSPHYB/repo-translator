@@ -14,6 +14,7 @@ Design decisions (see SCRATCH.md §2, §2.1):
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -66,9 +67,23 @@ def get_file_blob_map(repo_path: Path) -> dict[str, str]:
     Uses a single `git ls-tree -r HEAD` call. Each output line has the form:
         <mode> <type> <hash>\t<path>
     (mode/type/hash are space-separated; a single tab separates hash from path).
+
+    Passes `-c core.quotePath=false` so paths containing non-ASCII bytes (or
+    tabs/backslashes/quotes) are emitted as literal UTF-8 rather than
+    C-style quoted, octal-escaped strings (git's default `core.quotePath=true`
+    behavior), which would otherwise cause such paths to be mangled.
     """
     result = subprocess.run(
-        ["git", "-C", str(repo_path), "ls-tree", "-r", "HEAD"],
+        [
+            "git",
+            "-c",
+            "core.quotePath=false",
+            "-C",
+            str(repo_path),
+            "ls-tree",
+            "-r",
+            "HEAD",
+        ],
         check=True,
         capture_output=True,
         text=True,
@@ -103,6 +118,11 @@ def clone_or_pull(repo_config: "RepoConfig", repos_dir: Path) -> Path:
     - External repos (`repo_config.is_external`): never cloned or pulled;
       the configured `path` (expanded via `Path.expanduser()`) is returned
       as-is.
+
+    If `dest` exists but `dest/.git` does not, `dest` is treated as a
+    stale/partial directory left behind by a previous interrupted `clone()`
+    (e.g. process killed mid-clone) and is removed before cloning again,
+    since `git clone` refuses to clone into a non-empty directory.
     """
     if repo_config.is_external:
         assert repo_config.path is not None  # guaranteed by RepoConfig validator
@@ -115,6 +135,9 @@ def clone_or_pull(repo_config: "RepoConfig", repos_dir: Path) -> Path:
     if git_dir.exists():
         pull(dest)
     else:
+        if dest.exists():
+            # Stale/partial directory from a previously interrupted clone.
+            shutil.rmtree(dest)
         clone(repo_config.url, dest)
 
     return dest
