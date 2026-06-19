@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import patch
+
+import pytest
 
 from repo_translator.cache_manager import get_changed_files, load, save, update
 
@@ -69,6 +72,71 @@ def test_save_writes_non_ascii_content_readable(tmp_path: Path) -> None:
     # Confirm it's written as readable UTF-8, not escaped \uXXXX sequences.
     raw = cache_path.read_text(encoding="utf-8")
     assert "文档.md" in raw
+
+
+def test_save_leaves_existing_cache_untouched_when_interrupted_before_replace(
+    tmp_path: Path,
+) -> None:
+    """Simulates the process being killed after the temp file is written but
+    before the atomic `os.replace()` happens (or `os.replace()` itself
+    failing, e.g. disk full). The original `cache.json` must be left fully
+    intact -- never truncated or partially overwritten.
+    """
+    cache_path = tmp_path / "cache.json"
+    original_data = {
+        "langchain": {
+            "README.md": {
+                "blob_hash": "original_hash",
+                "translated_at": "2026-06-12T10:30:00Z",
+            }
+        }
+    }
+    save(cache_path, original_data)
+
+    new_data = {"langchain": {"README.md": {"blob_hash": "new_hash"}}}
+
+    with patch(
+        "repo_translator.cache_manager.os.replace",
+        side_effect=OSError("simulated interruption before replace"),
+    ):
+        with pytest.raises(OSError, match="simulated interruption"):
+            save(cache_path, new_data)
+
+    # Original file must be completely intact, not truncated/corrupted.
+    assert load(cache_path) == original_data
+
+    # No leftover temp files in the cache directory.
+    leftover_tmp_files = [
+        p for p in tmp_path.iterdir() if p.name != "cache.json"
+    ]
+    assert leftover_tmp_files == []
+
+
+def test_save_writes_to_same_directory_as_target_then_replaces(
+    tmp_path: Path,
+) -> None:
+    """Regression test: the temp file used for the atomic write must live in
+    the same directory as `cache_path` (required for `os.replace` to be
+    atomic across what could otherwise be different filesystems), and after
+    a successful `save()` no temp file should remain behind.
+    """
+    cache_path = tmp_path / "cache.json"
+    data = {"langchain": {"README.md": {"blob_hash": "abc"}}}
+
+    seen_tmp_dirs = []
+    real_replace = __import__("os").replace
+
+    def spy_replace(src, dst):
+        seen_tmp_dirs.append(Path(src).parent)
+        return real_replace(src, dst)
+
+    with patch("repo_translator.cache_manager.os.replace", side_effect=spy_replace):
+        save(cache_path, data)
+
+    assert seen_tmp_dirs == [tmp_path]
+    # Final result is correct and no temp files are left behind.
+    assert load(cache_path) == data
+    assert [p.name for p in tmp_path.iterdir()] == ["cache.json"]
 
 
 def test_get_changed_files_first_translation_returns_all_md_files() -> None:

@@ -32,6 +32,8 @@ Design notes:
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from pathlib import Path
 
 
@@ -44,11 +46,34 @@ def load(cache_path: Path) -> dict:
 
 
 def save(cache_path: Path, data: dict) -> None:
-    """Write `data` to `cache_path` as JSON, creating parent dirs if needed."""
+    """Write `data` to `cache_path` as JSON, creating parent dirs if needed.
+
+    Writes atomically: `data` is first serialized to a temporary file in the
+    same directory as `cache_path`, then moved into place with
+    `os.replace()`. This guarantees `cache_path` is either left fully intact
+    (old content) or fully replaced (new content) even if the process is
+    killed mid-write (SIGKILL, OOM, power loss, etc.) -- it can never be left
+    half-written/truncated. This matters because `save()` is called on every
+    poll cycle of the long-running watch-mode daemon (see `scheduler.py`),
+    and a truncated `cache.json` would crash `load()` on the next run and
+    discard the cache for every repo.
+    """
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    with cache_path.open("w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-        f.write("\n")
+
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{cache_path.name}.", suffix=".tmp", dir=cache_path.parent
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, cache_path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def get_changed_files(
