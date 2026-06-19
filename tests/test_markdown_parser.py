@@ -78,6 +78,26 @@ def test_parse_blocks_detects_frontmatter_as_non_translatable() -> None:
     assert lines[fm.end_line - 1] == "---"
 
 
+def test_frontmatter_not_detected_for_separator_lines_with_prose_between() -> None:
+    """Regression: a document starting with --- then prose then another ---
+    must NOT be treated as frontmatter (the content does not look YAML-like)."""
+    source = "---\n\nSome content in between.\n\n---\n\nMore content.\n"
+    blocks = parse_blocks(source)
+    frontmatter_blocks = [b for b in blocks if b.type == "frontmatter"]
+    assert len(frontmatter_blocks) == 0, (
+        "Prose between two --- lines must not be detected as frontmatter"
+    )
+
+
+def test_frontmatter_still_detected_for_valid_yaml() -> None:
+    """Normal YAML frontmatter must still be recognised after the heuristic
+    change."""
+    source = "---\ntitle: Foo\ndate: 2024-01-01\n---\n\nBody text.\n"
+    blocks = parse_blocks(source)
+    frontmatter_blocks = [b for b in blocks if b.type == "frontmatter"]
+    assert len(frontmatter_blocks) == 1
+
+
 def test_parse_blocks_marks_fence_and_html_as_non_translatable() -> None:
     blocks = parse_blocks(SAMPLE_MD)
 
@@ -341,6 +361,53 @@ def test_splice_falls_back_to_original_for_missing_translation_id() -> None:
         assert result_slice == original_slice
 
 
+MIXED_FORMAT_MD = """# Mixed Format Test
+
+This paragraph uses *star emphasis* and _underscore emphasis_ mixed together.
+
+* Star list item one
+* Star list item two
+
++ Plus list item one
++ Plus list item two
+
+- Dash list item one
+- Dash list item two
+
+
+Multiple blank lines above (two consecutive blank lines).
+
+\tCode block indented with a tab:
+
+\tdef tab_indented():
+\t    pass
+
+> A blockquote with *italic* inside.
+
+Final paragraph with **bold** and *italic* mixed.
+"""
+
+
+def test_mixed_format_roundtrip_is_byte_identical() -> None:
+    """Embed markers then splice back with identity translations: output == input.
+
+    Mixed formatting (star/underscore emphasis, mixed ``*``/``+``/``-`` list
+    markers, multiple consecutive blank lines, tab-indented code block,
+    blockquote) must survive the embed -> splice round-trip byte-for-byte.
+    Non-trivial because any re-serialisation or normalisation would break
+    the symmetry.
+    """
+    blocks = parse_blocks(MIXED_FORMAT_MD)
+    marked = embed_markers(MIXED_FORMAT_MD, blocks)
+    translations = extract_translations(marked)
+    # Identity: each marker-id maps back to its original content.
+    identity = {k: v for k, v in translations.items()}
+    result = splice(MIXED_FORMAT_MD, blocks, identity)
+    assert result == MIXED_FORMAT_MD, (
+        "Mixed-format document must survive embed->splice round-trip byte-for-byte"
+    )
+
+
 # ---------------------------------------------------------------------------
 # protect_inline / restore_inline
 # ---------------------------------------------------------------------------
@@ -381,6 +448,30 @@ def test_protect_inline_numbers_placeholders_in_appearance_order() -> None:
     assert placeholders["⟦CODE_0⟧"] == "http://a.com"
     assert placeholders["⟦CODE_1⟧"] == "`code`"
     assert placeholders["⟦CODE_2⟧"] == "http://b.com"
+
+
+def test_protect_inline_handles_url_with_parentheses() -> None:
+    """Regression: URLs containing parentheses (e.g. Wikipedia links) must
+    be protected, not left exposed in the text."""
+    text = "See [docs](http://example.com/wiki/Foo_(bar)) for details."
+    protected, ph = protect_inline(text)
+    assert "http://example.com/wiki/Foo_(bar)" not in protected
+    assert "⟦CODE_0⟧" in protected
+    assert ph.get("⟦CODE_0⟧") == "http://example.com/wiki/Foo_(bar)"
+    # Link text must remain translatable.
+    assert "[docs]" in protected
+
+
+def test_protect_inline_handles_double_backtick_code_span() -> None:
+    """Regression: code spans delimited by double backticks per CommonMark
+    must be protected as a single unit, leaving no bare backtick behind."""
+    text = "Use ``a `backtick` example`` in code."
+    protected, ph = protect_inline(text)
+    assert "⟦CODE_0⟧" in protected
+    assert ph.get("⟦CODE_0⟧") == "``a `backtick` example``"
+    # The inner backtick must not leak as a bare backtick or partial span.
+    leftover = protected.replace("⟦CODE_0⟧", "")
+    assert "`backtick`" not in leftover
 
 
 def test_restore_inline_is_inverse_of_protect_inline() -> None:

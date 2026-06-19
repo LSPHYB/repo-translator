@@ -89,6 +89,11 @@ def _detect_frontmatter(lines: list[str]) -> int | None:
     and there must be a later line that is exactly ``---`` (or ``...``, the
     YAML "end of document" marker) terminating it.
 
+    To avoid false positives on documents that start with a ``---`` separator
+    line followed by prose and another ``---`` (a common README / doc
+    template pattern), the content between the delimiters must survive a
+    lightweight YAML-likeness check before the block is accepted as frontmatter.
+
     Returns the 0-based index of the closing delimiter line (inclusive of the
     frontmatter), or ``None`` if no frontmatter block is present.
     """
@@ -96,8 +101,32 @@ def _detect_frontmatter(lines: list[str]) -> int | None:
         return None
     for i in range(1, len(lines)):
         if lines[i].strip() in ("---", "..."):
-            return i
+            # Validate content between delimiters looks YAML-like
+            # to avoid treating prose/text between two --- lines as frontmatter.
+            if _content_looks_like_frontmatter(lines[1:i]):
+                return i
+            # Otherwise keep scanning: the first --- may be a horizontal rule
+            # and a later ---/... may be the actual frontmatter closer.
     return None
+
+
+def _content_looks_like_frontmatter(content_lines: list[str]) -> bool:
+    """Lightweight heuristic: every non-empty line must match a YAML key: value pattern.
+
+    A line is considered YAML-like if it starts with optional whitespace
+    followed by a word-based key and a colon-separated value (``key: value``).
+    Empty lines and comment lines (``#``) are allowed anywhere.
+    """
+    if not content_lines or all(line.strip() == "" for line in content_lines):
+        return True  # empty frontmatter (---\\n---) is valid
+    yaml_key_re = re.compile(r"^\s*\w[\w\s.-]*: ")
+    for line in content_lines:
+        stripped = line.strip()
+        if stripped == "" or stripped.startswith("#"):
+            continue
+        if not yaml_key_re.match(stripped):
+            return False
+    return True
 
 
 def parse_blocks(source: str) -> list[Block]:
@@ -315,30 +344,160 @@ def protect_inline(text: str) -> tuple[str, dict[str, str]]:
     counter = 0
     out_parts: list[str] = []
     cursor = 0
+    i = 0
+    n = len(text)
 
-    for match in _PROTECTABLE_RE.finditer(text):
-        out_parts.append(text[cursor : match.start()])
+    while i < n:
+        # --- Inline code span (backtick string per CommonMark) ---
+        if text[i] == "`" and (i == 0 or text[i - 1] != "`"):
+            # Count consecutive backticks forming the opening delimiter run.
+            j = i
+            while j < n and text[j] == "`":
+                j += 1
+            run_len = j - i
 
-        key = f"{MARKER_OPEN}CODE_{counter}{MARKER_CLOSE}"
-        counter += 1
+            # Search for a matching closing backtick run of the same length.
+            # It must not be adjacent to another backtick on either side.
+            close_at = _find_matching_backtick_run(text, j, run_len)
+            if close_at != -1 and close_at > j:
+                out_parts.append(text[cursor:i])
+                code_span = text[i : close_at + run_len]
+                key = f"{MARKER_OPEN}CODE_{counter}{MARKER_CLOSE}"
+                counter += 1
+                placeholders[key] = code_span
+                out_parts.append(key)
+                cursor = close_at + run_len
+                i = cursor
+                continue
+            else:
+                i = j  # skip the backtick run (unmatched opening)
+                continue
 
-        if match.group("code") is not None:
-            placeholders[key] = match.group("code")
-            out_parts.append(key)
-            cursor = match.end()
-        else:
-            # Link/image alternative: protect only the URL span, keep the
-            # surrounding "[text](" / ")" (outside the "url" group) as-is
-            # so link/alt text remains translatable.
-            url_start, url_end = match.span("url")
-            placeholders[key] = match.group("url")
-            out_parts.append(text[match.start() : url_start])
-            out_parts.append(key)
-            out_parts.append(text[url_end : match.end()])
-            cursor = match.end()
+        # --- Image: ![alt](url) ---
+        if text[i] == "!" and i + 1 < n and text[i + 1] == "[":
+            bracket_close = _find_link_bracket_close(text, i + 2)
+            if (
+                bracket_close != -1
+                and bracket_close + 1 < n
+                and text[bracket_close + 1] == "("
+            ):
+                url_start = bracket_close + 2
+                url_end = _find_paren_close(text, url_start)
+                if url_end != -1:
+                    out_parts.append(text[cursor:i])
+                    key = f"{MARKER_OPEN}CODE_{counter}{MARKER_CLOSE}"
+                    counter += 1
+                    url = text[url_start:url_end]
+                    placeholders[key] = url
+                    # Keep surrounding markup (![...](...)) intact; only the
+                    # URL itself is replaced by a placeholder.
+                    out_parts.append(text[i:url_start])  # ![alt](
+                    out_parts.append(key)
+                    out_parts.append(text[url_end : url_end + 1])  # )
+                    cursor = url_end + 1
+                    i = cursor
+                    continue
+
+        # --- Link: [text](url) ---
+        if text[i] == "[":
+            bracket_close = _find_link_bracket_close(text, i + 1)
+            if (
+                bracket_close != -1
+                and bracket_close + 1 < n
+                and text[bracket_close + 1] == "("
+            ):
+                url_start = bracket_close + 2
+                url_end = _find_paren_close(text, url_start)
+                if url_end != -1:
+                    out_parts.append(text[cursor:i])
+                    key = f"{MARKER_OPEN}CODE_{counter}{MARKER_CLOSE}"
+                    counter += 1
+                    url = text[url_start:url_end]
+                    placeholders[key] = url
+                    out_parts.append(text[i:url_start])  # [text](
+                    out_parts.append(key)
+                    out_parts.append(text[url_end : url_end + 1])  # )
+                    cursor = url_end + 1
+                    i = cursor
+                    continue
+
+        i += 1
 
     out_parts.append(text[cursor:])
     return "".join(out_parts), placeholders
+
+
+def _find_matching_backtick_run(text: str, start: int, run_len: int) -> int:
+    """Find a closing backtick run of *run_len* length at or after *start*.
+
+    The closing run must not be adjacent to another backtick (i.e. it must
+    be a standalone backtick string, not part of a longer run). Returns the
+    start index of the closing run, or -1 if not found.
+    """
+    n = len(text)
+    needle = "`" * run_len
+    search = start
+    while search < n:
+        pos = text.find(needle, search)
+        if pos == -1:
+            break
+        # Reject if adjacent to another backtick (part of a longer run).
+        if pos + run_len < n and text[pos + run_len] == "`":
+            search = pos + run_len + 1
+            continue
+        if pos > 0 and text[pos - 1] == "`":
+            search = pos + run_len
+            continue
+        return pos
+    return -1
+
+
+def _find_link_bracket_close(text: str, start: int) -> int:
+    """Find the closing ``]`` for a link label that begins at *start*.
+
+    Skips escaped brackets ``\\]`` and stops at newline (inline links cannot
+    span lines in standard Markdown). Returns the index of ``]`` or -1.
+    """
+    n = len(text)
+    i = start
+    while i < n:
+        ch = text[i]
+        if ch == "\\" and i + 1 < n:
+            i += 2  # skip escaped character
+            continue
+        if ch == "\n":
+            return -1
+        if ch == "]":
+            return i
+        i += 1
+    return -1
+
+
+def _find_paren_close(text: str, start: int) -> int:
+    """Find the closing ``)`` using balanced-parenthesis counting.
+
+    Starts at *start* (just after the opening ``(``) with depth 1.
+    Handles escaped parens ``\\(`` / ``\\)``. Stops at newline.
+    Returns the index of the matching ``)`` or -1.
+    """
+    n = len(text)
+    depth = 1
+    i = start
+    while i < n:
+        ch = text[i]
+        if ch == "\\" and i + 1 < n:
+            i += 2
+            continue
+        if ch == "\n":
+            return -1
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return -1
 
 
 def restore_inline(text: str, placeholders: dict[str, str]) -> str:
