@@ -460,12 +460,18 @@ def _parse_interval_hours(value: str) -> int:
     if text.endswith("h") or text.endswith("H"):
         text = text[:-1]
     try:
-        return int(text)
+        hours = int(text)
     except ValueError as e:
         raise click.ClickException(
             f"Invalid --interval value '{value}'. Expected an integer number "
             f"of hours, e.g. '6' or '6h'."
         ) from e
+    if hours <= 0:
+        raise click.ClickException(
+            f"Invalid --interval value '{value}'. Must be a positive number "
+            f"of hours."
+        )
+    return hours
 
 
 @main.command()
