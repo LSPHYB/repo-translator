@@ -93,6 +93,26 @@ def _extract_marker_content(text: str, marker_id: int) -> str | None:
     return text[content_start:end]
 
 
+def _extract_marker_content_fallback(text: str, marker_id: int) -> str:
+    """Best-effort extraction when the closing tag ``⟦/marker_id⟧`` is missing.
+
+    Extracts from right after ``⟦marker_id⟧`` up to the next ``⟦`` marker
+    or to end of string, whichever comes first.  This prevents silent
+    content loss when input is malformed (open tag exists but close tag is
+    absent) and the normal ``_extract_marker_content`` returns ``None``.
+    """
+    open_tag = f"⟦{marker_id}⟧"
+    start = text.find(open_tag)
+    if start == -1:
+        return ""
+    content_start = start + len(open_tag)
+    remaining = text[content_start:]
+    next_marker = remaining.find("⟦")
+    if next_marker == -1:
+        return remaining
+    return remaining[:next_marker]
+
+
 def _is_valid_translation(content: str) -> bool:
     """Lightweight validation of a single marker's extracted content.
 
@@ -200,10 +220,11 @@ class BaseTranslator(ABC):
 
         try:
             translated = self._call_with_retry(lambda: self.translate_raw(prompt))
-        except TranslationError:
+        except Exception:
             logger.warning(
                 "Full-file translation failed; falling back to per-marker retry for all %d markers",
                 len(expected_ids),
+                exc_info=True,
             )
             translated = ""
 
@@ -224,9 +245,7 @@ class BaseTranslator(ABC):
         for marker_id in failed_ids:
             original_content = _extract_marker_content(marked_source, marker_id)
             if original_content is None:
-                # Should not happen since marker_id came from expected_ids,
-                # but guard defensively: nothing sensible to splice in.
-                continue
+                original_content = _extract_marker_content_fallback(marked_source, marker_id)
             fallback_content = self._fallback_translate_marker(marker_id, original_content)
             if fallback_content is not None:
                 result_pieces[marker_id] = fallback_content
@@ -252,7 +271,7 @@ class BaseTranslator(ABC):
         )
         try:
             response = self._call_with_retry(lambda: self.translate_raw(fallback_prompt))
-        except TranslationError:
+        except Exception:
             return None
 
         status = _parse_marker_ids(response)

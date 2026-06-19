@@ -261,3 +261,155 @@ def test_translate_file_prompt_includes_system_prompt_and_source() -> None:
     prompt = translator.calls[0]
     assert SYSTEM_PROMPT in prompt
     assert marked_source in prompt
+
+
+# ---------------------------------------------------------------------------
+# Regression: Important #1 — non-RateLimitError exceptions trigger graceful
+# degradation to per-marker fallback instead of crashing translate_file.
+# ---------------------------------------------------------------------------
+
+
+class TimeoutError(Exception):
+    """Simulated timeout exception (mirrors what providers re-raise from
+    SDK APITimeoutError)."""
+
+
+class TimeoutRaisingTranslator(BaseTranslator):
+    """A translator whose `translate_raw` always raises TimeoutError (not
+    RateLimitError), simulating a provider-level timeout that
+    `_call_with_retry` does not catch."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def translate_raw(self, prompt: str) -> str:
+        self.calls.append(prompt)
+        raise TimeoutError("request timed out")
+
+
+def test_translate_file_timeout_error_triggers_fallback_not_crash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Important #1: non-RateLimitError exceptions (e.g. TimeoutError) must
+    be caught and trigger per-marker fallback, not propagate to the caller."""
+    monkeypatch.setattr(BaseTranslator, "RETRY_BASE_DELAY", 0.0)
+    marked_source = "⟦0⟧Hello⟦/0⟧ ⟦1⟧World⟦/1⟧"
+    translator = TimeoutRaisingTranslator()
+
+    result = translator.translate_file(marked_source, glossary=[])
+
+    # Both markers fall back — fallback also times out — so original content
+    # is preserved for both.  The key assertion is that no exception escapes.
+    assert result == "⟦0⟧Hello⟦/0⟧⟦1⟧World⟦/1⟧"
+    # One full-file call + two per-marker fallback calls (both also timed out).
+    assert len(translator.calls) == 3
+
+
+def test_translate_file_unexpected_error_during_full_call_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Full-file call raises an unexpected exception; per-marker fallback
+    should still proceed and succeed for each marker individually."""
+    monkeypatch.setattr(BaseTranslator, "RETRY_BASE_DELAY", 0.0)
+    marked_source = "⟦0⟧Hello⟦/0⟧"
+
+    class MixedTranslator(BaseTranslator):
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+            self._first = True
+
+        def translate_raw(self, prompt: str) -> str:
+            self.calls.append(prompt)
+            if self._first:
+                self._first = False
+                raise TimeoutError("timeout on full-file call")
+            return "⟦0⟧你好⟦/0⟧"
+
+    translator = MixedTranslator()
+    result = translator.translate_file(marked_source, glossary=[])
+
+    assert result == "⟦0⟧你好⟦/0⟧"
+    assert len(translator.calls) == 2  # 1 failed full-file + 1 successful fallback
+
+
+# ---------------------------------------------------------------------------
+# Regression: Important #2 — malformed marker (open tag without close tag)
+# must not cause silent content loss.
+# ---------------------------------------------------------------------------
+
+
+def test_extract_marker_content_fallback_closing_tag_missing() -> None:
+    """When close tag is missing, fallback extracts from open tag to next
+    marker or end of string."""
+    from repo_translator.translator.base import _extract_marker_content_fallback
+
+    # Close tag missing; next marker follows.
+    text = "prefix ⟦0⟧Hello world ⟦1⟧Goodbye⟦/1⟧"
+    result = _extract_marker_content_fallback(text, 0)
+    assert result == "Hello world "
+
+    # Close tag missing; no next marker (end of string).
+    text2 = "prefix ⟦0⟧Hello world"
+    result2 = _extract_marker_content_fallback(text2, 0)
+    assert result2 == "Hello world"
+
+    # Open tag not found at all.
+    result3 = _extract_marker_content_fallback("no marker here", 0)
+    assert result3 == ""
+
+
+def test_translate_file_malformed_marker_preserves_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Important #2: marker with open tag but missing close tag should not
+    have its content silently dropped."""
+    monkeypatch.setattr(BaseTranslator, "RETRY_BASE_DELAY", 0.0)
+    # ⟦1⟧ has no closing tag (malformed); ⟦0⟧ is well-formed.
+    marked_source = "Prefix ⟦0⟧Hello⟦/0⟧ infix ⟦1⟧World end"
+
+    class FailingTranslator(BaseTranslator):
+        """Full-file call fails, fallback also fails — so original content
+        is preserved.  This ensures the malformed marker's best-effort content
+        makes it into the output."""
+        def translate_raw(self, prompt: str) -> str:
+            raise RateLimitError("always rate limited")
+
+    translator = FailingTranslator()
+    result = translator.translate_file(marked_source, glossary=[])
+
+    # ⟦0⟧ content preserved (well-formed, normal fallback).
+    # ⟦1⟧ content "World end" preserved via _extract_marker_content_fallback
+    # (the close tag was missing, so we extract to end of string).
+    assert "⟦0⟧Hello⟦/0⟧" in result
+    assert "⟦1⟧World end⟦/1⟧" in result
+    # The malformed marker content "World end" must appear, not empty.
+    assert "⟦1⟧⟦/1⟧" not in result
+
+
+def test_translate_file_malformed_marker_with_fallback_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Malformed marker whose best-effort content is successfully
+    translated by the per-marker fallback."""
+    monkeypatch.setattr(BaseTranslator, "RETRY_BASE_DELAY", 0.0)
+    # ⟦1⟧ has no closing tag; ⟦0⟧ is well-formed.
+    marked_source = "Intro ⟦0⟧Hello⟦/0⟧ gap ⟦1⟧Goodbye tail"
+
+    class MixedFallbackTranslator(BaseTranslator):
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def translate_raw(self, prompt: str) -> str:
+            self.calls.append(prompt)
+            # Full-file call: only ⟦0⟧ present, but ⟦1⟧ mangled.
+            if len(self.calls) <= 1:
+                return "⟦0⟧你好⟦/0⟧ gap ⟦1⟧⟦/1⟧"  # ⟦1⟧ has empty content
+            # Fallback for ⟦1⟧ succeeds.
+            return "⟦1⟧再见⟦/1⟧"
+
+    translator = MixedFallbackTranslator()
+    result = translator.translate_file(marked_source, glossary=[])
+
+    # Both markers should have valid translated content.
+    assert "⟦0⟧你好⟦/0⟧" in result
+    assert "⟦1⟧再见⟦/1⟧" in result
