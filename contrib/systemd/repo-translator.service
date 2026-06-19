@@ -1,0 +1,13 @@
+[Unit]
+Description=repo-translator watch daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=repo-translator watch
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

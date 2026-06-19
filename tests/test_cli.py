@@ -67,7 +67,7 @@ def test_add_url_clones_and_syncs(tmp_path: Path, runner: CliRunner) -> None:
     config_path, cache_path = _setup_temp_paths(tmp_path)
 
     with patch("repo_translator.config.DEFAULT_CONFIG_PATH", config_path), \
-         patch("repo_translator.cli.DEFAULT_CACHE_PATH", cache_path), \
+         patch("repo_translator.cache_manager.DEFAULT_CACHE_PATH", cache_path), \
          patch("repo_translator.cli.git_manager.clone") as mock_clone, \
          patch("repo_translator.cli.git_manager.get_file_blob_map",
                return_value=_fake_blob_map(["README.md", "docs/guide.md"])), \
@@ -126,7 +126,7 @@ def test_add_url_custom_name(tmp_path: Path, runner: CliRunner) -> None:
     config_path, cache_path = _setup_temp_paths(tmp_path)
 
     with patch("repo_translator.config.DEFAULT_CONFIG_PATH", config_path), \
-         patch("repo_translator.cli.DEFAULT_CACHE_PATH", cache_path), \
+         patch("repo_translator.cache_manager.DEFAULT_CACHE_PATH", cache_path), \
          patch("repo_translator.cli.git_manager.clone"), \
          patch("repo_translator.cli.git_manager.get_file_blob_map",
                return_value=_fake_blob_map(["README.md"])), \
@@ -159,7 +159,7 @@ def test_add_local_path_creates_path_entry(tmp_path: Path, runner: CliRunner) ->
     config_path, cache_path = _setup_temp_paths(tmp_path)
 
     with patch("repo_translator.config.DEFAULT_CONFIG_PATH", config_path), \
-         patch("repo_translator.cli.DEFAULT_CACHE_PATH", cache_path), \
+         patch("repo_translator.cache_manager.DEFAULT_CACHE_PATH", cache_path), \
          patch("repo_translator.cli.git_manager.clone") as mock_clone, \
          patch("repo_translator.cli.sync.sync_repo"), \
          patch("repo_translator.cli.cache_manager.save"):
@@ -239,7 +239,7 @@ def test_translate_existing_repo_calls_sync(
     save_config(config, config_path)
 
     with patch("repo_translator.config.DEFAULT_CONFIG_PATH", config_path), \
-         patch("repo_translator.cli.DEFAULT_CACHE_PATH", cache_path), \
+         patch("repo_translator.cache_manager.DEFAULT_CACHE_PATH", cache_path), \
          patch("repo_translator.cli.git_manager.clone_or_pull",
                return_value=tmp_path / "repos" / "myrepo") as mock_cp, \
          patch("repo_translator.cli.git_manager.get_file_blob_map",
@@ -349,7 +349,7 @@ def test_list_shows_managed_and_external(
     )
 
     with patch("repo_translator.config.DEFAULT_CONFIG_PATH", config_path), \
-         patch("repo_translator.cli.DEFAULT_CACHE_PATH", cache_path):
+         patch("repo_translator.cache_manager.DEFAULT_CACHE_PATH", cache_path):
 
         result = runner.invoke(main, ["list"])
 
@@ -366,7 +366,7 @@ def test_list_empty_shows_message(tmp_path: Path, runner: CliRunner) -> None:
     save_config(AppConfig(), config_path)
 
     with patch("repo_translator.config.DEFAULT_CONFIG_PATH", config_path), \
-         patch("repo_translator.cli.DEFAULT_CACHE_PATH", cache_path):
+         patch("repo_translator.cache_manager.DEFAULT_CACHE_PATH", cache_path):
 
         result = runner.invoke(main, ["list"])
 

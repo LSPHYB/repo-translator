@@ -10,7 +10,7 @@ from pathlib import Path
 import click
 import yaml
 
-from repo_translator import cache_manager, git_manager, sync
+from repo_translator import cache_manager, git_manager, scheduler, sync
 from repo_translator.config import (
     AppConfig,
     RepoConfig,
@@ -19,9 +19,6 @@ from repo_translator.config import (
 )
 
 logger = logging.getLogger(__name__)
-
-# Default paths (kept as module-level for test mocking).
-DEFAULT_CACHE_PATH: Path = Path.home() / ".repo-translator" / "cache.json"
 
 
 def _infer_repo_name(url_or_path: str) -> str:
@@ -146,7 +143,7 @@ def add(url_or_path: str, name: str | None) -> None:  # noqa: D401
     save_config(config)
 
     # Run initial sync.
-    cache = cache_manager.load(DEFAULT_CACHE_PATH)
+    cache = cache_manager.load(cache_manager.DEFAULT_CACHE_PATH)
 
     # Count .md files for progress reporting.
     try:
@@ -176,7 +173,7 @@ def add(url_or_path: str, name: str | None) -> None:  # noqa: D401
                 f"Check 'repo-translator config' (translator.engine/api_key) "
                 f"and retry with 'repo-translator translate {repo_name}'."
             ) from e
-        cache_manager.save(DEFAULT_CACHE_PATH, cache)
+        cache_manager.save(cache_manager.DEFAULT_CACHE_PATH, cache)
         succeeded = len(cache.get(repo_name, {}))
         click.echo(f"[{succeeded}/{total_md}] Done.")
 
@@ -199,7 +196,7 @@ def translate(name: str) -> None:
     config = load_config()
     repo_config = _find_repo_by_name(config, name)
 
-    cache = cache_manager.load(DEFAULT_CACHE_PATH)
+    cache = cache_manager.load(cache_manager.DEFAULT_CACHE_PATH)
 
     # Pre-flight: get the blob map so we can report changed-file count.
     repos_dir = Path(config.output.base_dir).expanduser() / "repos"
@@ -232,7 +229,7 @@ def translate(name: str) -> None:
             f"Translation engine unavailable: {e}\n"
             f"Check 'repo-translator config' (translator.engine/api_key)."
         ) from e
-    cache_manager.save(DEFAULT_CACHE_PATH, cache)
+    cache_manager.save(cache_manager.DEFAULT_CACHE_PATH, cache)
     new_count = len(cache.get(name, {}))
 
     click.echo(
@@ -249,7 +246,7 @@ def translate(name: str) -> None:
 def list_repos() -> None:
     """List tracked repositories and their status."""
     config = load_config()
-    cache = cache_manager.load(DEFAULT_CACHE_PATH)
+    cache = cache_manager.load(cache_manager.DEFAULT_CACHE_PATH)
 
     if not config.repos:
         click.echo("No repositories tracked.")
@@ -449,8 +446,26 @@ def _nested_set(data: dict, keys: list[str], value: object) -> None:
 
 
 # ---------------------------------------------------------------------------
-# watch (stub -- real implementation in Phase 7)
+# watch
 # ---------------------------------------------------------------------------
+
+
+def _parse_interval_hours(value: str) -> int:
+    """Parse an `--interval` value like ``"6"`` or ``"6h"`` into hours.
+
+    Raises ``click.ClickException`` if *value* isn't a bare integer or an
+    integer immediately followed by ``h``.
+    """
+    text = value.strip()
+    if text.endswith("h") or text.endswith("H"):
+        text = text[:-1]
+    try:
+        return int(text)
+    except ValueError as e:
+        raise click.ClickException(
+            f"Invalid --interval value '{value}'. Expected an integer number "
+            f"of hours, e.g. '6' or '6h'."
+        ) from e
 
 
 @main.command()
@@ -459,12 +474,15 @@ def _nested_set(data: dict, keys: list[str], value: object) -> None:
 )
 def watch(interval: str | None) -> None:
     """Start the watch daemon, polling all tracked repositories on a schedule."""
+    config = load_config()
+    interval_hours = _parse_interval_hours(interval) if interval is not None else None
+
+    effective_hours = interval_hours or config.sync.interval_hours
     click.echo(
-        click.style(
-            "The 'watch' command is not yet implemented (coming in Phase 7).",
-            fg="yellow",
-        )
+        f"Watching {len(config.repos)} repo(s). Next check in {effective_hours}h."
     )
+
+    scheduler.run_watch(config, interval_hours)
 
 
 if __name__ == "__main__":

@@ -36,6 +36,11 @@ import os
 import tempfile
 from pathlib import Path
 
+# Default cache location, parallel to `config.DEFAULT_CONFIG_PATH`. Kept here
+# (rather than in `cli.py`) so `scheduler.py` and `cli.py` share a single
+# source of truth instead of duplicating/drifting on the same path.
+DEFAULT_CACHE_PATH: Path = Path.home() / ".repo-translator" / "cache.json"
+
 
 def load(cache_path: Path) -> dict:
     """Load and parse `cache_path` as JSON. Returns `{}` if the file doesn't exist."""
