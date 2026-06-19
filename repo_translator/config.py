@@ -31,7 +31,15 @@ class RepoConfig(BaseModel):
 
     @model_validator(mode="after")
     def _check_url_xor_path(self) -> "RepoConfig":
-        if (self.url is None) == (self.path is None):
+        # Treat empty-string / whitespace-only values as "unset", since YAML
+        # or CLI input can easily produce e.g. `url: ""` that would otherwise
+        # slip past an `is None` check.
+        self.url = self.url.strip() or None if self.url is not None else None
+        self.path = self.path.strip() or None if self.path is not None else None
+
+        url_set = self.url is not None
+        path_set = self.path is not None
+        if url_set == path_set:
             raise ValueError(
                 "RepoConfig requires exactly one of 'url' or 'path' to be set "
                 "(they are mutually exclusive)"

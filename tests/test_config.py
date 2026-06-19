@@ -34,3 +34,23 @@ def test_repo_config_both_url_and_path_is_invalid() -> None:
 def test_repo_config_neither_url_nor_path_is_invalid() -> None:
     with pytest.raises(ValidationError):
         RepoConfig(name="langchain")
+
+
+def test_repo_config_empty_string_url_with_no_path_is_invalid() -> None:
+    with pytest.raises(ValidationError):
+        RepoConfig(name="langchain", url="", path=None)
+
+
+def test_repo_config_whitespace_url_with_no_path_is_invalid() -> None:
+    with pytest.raises(ValidationError):
+        RepoConfig(name="langchain", url="   ", path=None)
+
+
+def test_repo_config_empty_string_path_with_no_url_is_invalid() -> None:
+    with pytest.raises(ValidationError):
+        RepoConfig(name="my-project", url=None, path="")
+
+
+def test_repo_config_whitespace_path_with_no_url_is_invalid() -> None:
+    with pytest.raises(ValidationError):
+        RepoConfig(name="my-project", url=None, path="   ")
