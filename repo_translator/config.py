@@ -10,8 +10,13 @@ Schema reference:
 
 from __future__ import annotations
 
+import os
+import tempfile
 from datetime import datetime
+from pathlib import Path
 
+import click
+import yaml
 from pydantic import BaseModel, Field, model_validator
 
 
@@ -106,3 +111,80 @@ class AppConfig(BaseModel):
     output: OutputConfig = Field(default_factory=OutputConfig)
     repos: list[RepoConfig] = Field(default_factory=list)
     glossary: list[GlossaryEntry] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Config file I/O
+# ---------------------------------------------------------------------------
+
+DEFAULT_CONFIG_PATH: Path = Path.home() / ".repo-translator" / "config.yaml"
+
+
+def _expand_path(path: Path | None) -> Path:
+    """Return the resolved config path, creating parent directories if needed."""
+    resolved = Path(path).expanduser() if path is not None else DEFAULT_CONFIG_PATH
+    return resolved
+
+
+def load_config(path: Path | None = None) -> AppConfig:
+    """Load ``AppConfig`` from config.yaml.
+
+    If the file does not exist, returns an ``AppConfig`` populated with
+    defaults.  Raises ``click.ClickException`` for parse errors.
+    """
+    resolved = _expand_path(path)
+
+    if not resolved.exists():
+        return AppConfig()
+
+    try:
+        with resolved.open("r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except yaml.YAMLError as e:
+        raise click.ClickException(
+            f"Failed to parse config file {resolved}: {e}"
+        ) from e
+    except OSError as e:
+        raise click.ClickException(
+            f"Failed to read config file {resolved}: {e}"
+        ) from e
+
+    try:
+        return AppConfig.model_validate(data)
+    except Exception as e:
+        raise click.ClickException(
+            f"Invalid configuration in {resolved}: {e}"
+        ) from e
+
+
+def save_config(config: AppConfig, path: Path | None = None) -> None:
+    """Save ``AppConfig`` to config.yaml atomically.
+
+    Uses the same tempfile + ``os.replace()`` pattern as ``cache_manager``
+    to guarantee the file is never left partially written.  Creates parent
+    directories if they do not exist.
+    """
+    resolved = _expand_path(path)
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+
+    data = config.model_dump(mode="json", exclude_none=True)
+
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=".config.yaml.", suffix=".tmp", dir=resolved.parent
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            yaml.dump(
+                data,
+                f,
+                allow_unicode=True,
+                default_flow_style=False,
+                sort_keys=False,
+            )
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, resolved)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
