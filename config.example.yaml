@@ -1,0 +1,46 @@
+# ~/.repo-translator/config.yaml
+#
+# Example configuration covering every field supported by repo_translator/config.py.
+# Copy this file to ~/.repo-translator/config.yaml and edit as needed.
+
+translator:
+  engine: deepseek          # openai | deepseek | claude
+  api_key: sk-xxx           # can also be supplied via an environment variable
+  model: deepseek-chat      # model name for the selected engine
+  base_url: ~               # custom API endpoint (optional, e.g. for self-hosted/proxy)
+  max_tokens: 4096
+  temperature: 0.3          # lower temperature recommended for translation tasks
+
+sync:
+  interval_hours: 6         # polling interval for `watch`
+  concurrency: 3            # number of files translated concurrently per repo sync
+
+output:
+  base_dir: ~/.repo-translator/output
+  suffix: _zh                # translated file suffix, e.g. README_zh.md
+  exclude:                   # glob patterns; matching files are skipped entirely
+    - CHANGELOG.md
+    - LICENSE.md
+    - "**/node_modules/**"
+
+# Glossary: terms that should be translated consistently, or kept verbatim.
+# If `translation` is omitted/null, the term is left untranslated in the output.
+glossary:
+  - term: Agent
+    translation: 智能体
+  - term: LangChain
+    translation: ~          # keep "LangChain" as-is, do not translate
+
+repos:
+  # "managed" repo: the tool clones this to ~/.repo-translator/repos/<name>/ and
+  # runs `git pull` before each sync.
+  - name: langchain
+    url: https://github.com/langchain-ai/langchain
+    branch: main
+    added_at: 2026-06-12T10:00:00Z
+
+  # "external" repo: an existing local clone on disk. The tool never clones or
+  # pulls it — it only reads the current HEAD. `url` and `path` are mutually
+  # exclusive; exactly one must be set per entry.
+  - name: my-project
+    path: ~/code/my-project

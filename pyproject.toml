@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "repo-translator"
+version = "0.1.0"
+description = "CLI tool to automatically translate Markdown docs in GitHub repos into Chinese."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+
+dependencies = [
+    "click",
+    "pydantic>=2.0",
+    "markdown-it-py",
+    "mdit-py-plugins",
+    "openai",
+    "anthropic",
+    "apscheduler",
+    "rich",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
+[project.scripts]
+repo-translator = "repo_translator.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["repo_translator"]
