@@ -1,0 +1,11 @@
+/* ── repo-translator Design System · global entry ────────────────────────
+   Consumers import THIS file. It is an @import manifest only — no rules here.
+   Ported from the mockup's root styles.css; paths adjusted to the
+   desktop/src/design-system/tokens/ location.
+   ──────────────────────────────────────────────────────────────────────── */
+
+@import './tokens/fonts.css';
+@import './tokens/colors.css';
+@import './tokens/typography.css';
+@import './tokens/spacing.css';
+@import './tokens/base.css';

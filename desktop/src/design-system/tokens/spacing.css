@@ -1,0 +1,79 @@
+/* ── repo-translator · Spacing, Radii, Shadows, Blur, Motion ─────────────
+   Desktop-app density: a 4px base step, soft diffuse shadows, generous
+   corner radii, and the signature backdrop-blur for glass surfaces.
+   ──────────────────────────────────────────────────────────────────────── */
+
+:root {
+  /* ─── Spacing scale (4px base) ─── */
+  --space-0:  0;
+  --space-1:  4px;
+  --space-2:  8px;
+  --space-3:  12px;
+  --space-4:  16px;
+  --space-5:  20px;
+  --space-6:  24px;
+  --space-8:  32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+  --space-20: 80px;
+
+  /* ─── Corner radii ─── */
+  --radius-xs:   6px;
+  --radius-sm:   8px;
+  --radius-md:   12px;   /* default control radius */
+  --radius-lg:   16px;   /* cards */
+  --radius-xl:   20px;   /* large panels */
+  --radius-2xl:  28px;
+  --radius-pill: 999px;
+
+  /* ─── Glass blur ─── */
+  --blur-glass:  blur(12px);  /* @kind other */
+  --blur-strong: blur(20px); /* @kind other */
+  --blur-subtle: blur(6px);  /* @kind other */
+
+  /* ─── Shadows (soft, diffuse, edge-spread — light mode tuned) ─── */
+  --shadow-xs:   0 1px 2px rgba(15, 23, 42, 0.06);
+  --shadow-sm:   0 4px 12px -6px rgba(148, 163, 184, 0.18);
+  --shadow-md:   0 10px 30px -10px rgba(148, 163, 184, 0.22);
+  --shadow-lg:   0 24px 50px -18px rgba(71, 85, 105, 0.28);
+  --shadow-card: 0 10px 30px -10px rgba(148, 163, 184, 0.12);  /* spec value */
+
+  /* Accent glow (button hover, focus halos) */
+  --glow-accent: 0 0 0 1px var(--accent-ring), 0 8px 30px -6px rgba(79, 172, 254, 0.45); /* @kind shadow */
+
+  /* ─── Motion ─── */
+  --ease-out:   cubic-bezier(0.16, 1, 0.3, 1);   /* @kind other */
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1); /* @kind other */
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1); /* @kind other */
+
+  --dur-fast:   120ms;  /* @kind other */
+  --dur-base:   200ms;   /* @kind other */
+  --dur-theme:  300ms;   /* @kind other */
+  --dur-slow:   400ms;  /* @kind other */
+
+  /* Standard theme-transition shorthand (apply to themed surfaces) */
+  --transition-theme: background-color var(--dur-theme) var(--ease-in-out),
+                      color var(--dur-theme) var(--ease-in-out),
+                      border-color var(--dur-theme) var(--ease-in-out); /* @kind other */
+
+  /* ─── Z-index ladder ─── */
+  --z-base:    0;   /* @kind other */
+  --z-sticky:  100; /* @kind other */
+  --z-drawer:  200; /* @kind other */
+  --z-overlay: 300; /* @kind other */
+  --z-modal:   400; /* @kind other */
+  --z-toast:   500; /* @kind other */
+}
+
+/* Dark mode shadow tuning — deeper, cooler casts */
+:root {
+  --shadow-card: 0 16px 40px -16px rgba(0, 0, 0, 0.55);
+  --shadow-md:   0 16px 40px -16px rgba(0, 0, 0, 0.5);
+  --shadow-lg:   0 30px 60px -20px rgba(0, 0, 0, 0.6);
+}
+[data-theme="light"] {
+  --shadow-card: 0 10px 30px -10px rgba(148, 163, 184, 0.12);
+  --shadow-md:   0 10px 30px -10px rgba(148, 163, 184, 0.22);
+  --shadow-lg:   0 24px 50px -18px rgba(71, 85, 105, 0.28);
+}

@@ -1,0 +1,30 @@
+/* ── repo-translator · Webfonts ──────────────────────────────────────────
+   The desktop app spec calls for a modern sans-serif (Inter / Outfit), a
+   terminal monospace for the debug console, and a CJK face since the entire
+   UI is in Simplified Chinese.
+
+   Bundled locally via @fontsource (npm-vendored woff2/woff files) rather
+   than loaded from Google Fonts — the desktop app must start offline with
+   no network dependency for fonts. Weights below match what tokens/typography.css
+   actually requests (Outfit 400/500/600/700/800, Inter 400/500/600/700,
+   JetBrains Mono 400/500/700, Noto Sans SC 400/500/700).
+   ──────────────────────────────────────────────────────────────────────── */
+
+@import '@fontsource/outfit/400.css';
+@import '@fontsource/outfit/500.css';
+@import '@fontsource/outfit/600.css';
+@import '@fontsource/outfit/700.css';
+@import '@fontsource/outfit/800.css';
+
+@import '@fontsource/inter/400.css';
+@import '@fontsource/inter/500.css';
+@import '@fontsource/inter/600.css';
+@import '@fontsource/inter/700.css';
+
+@import '@fontsource/jetbrains-mono/400.css';
+@import '@fontsource/jetbrains-mono/500.css';
+@import '@fontsource/jetbrains-mono/700.css';
+
+@import '@fontsource/noto-sans-sc/400.css';
+@import '@fontsource/noto-sans-sc/500.css';
+@import '@fontsource/noto-sans-sc/700.css';
