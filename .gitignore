@@ -9,3 +9,8 @@ venv/
 *.egg-info
 build/
 dist/
+
+# Playwright MCP browser-automation artifacts from manual click-through
+# verification (screenshots, console/page snapshots) -- scratch debugging
+# output, never a deliverable.
+.playwright-mcp/

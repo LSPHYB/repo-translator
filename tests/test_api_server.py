@@ -30,6 +30,38 @@ def test_health_returns_ok() -> None:
     assert isinstance(body["version"], str) and body["version"]
 
 
+def test_cors_allows_vite_dev_origin() -> None:
+    """The desktop frontend's Vite dev server (http://localhost:1420) makes
+    browser-based `fetch()` calls to this API; without CORSMiddleware those
+    are rejected by the browser before this test suite would ever see it
+    (TestClient bypasses real CORS enforcement, but it does still exercise
+    Starlette's CORSMiddleware and surface the response headers it adds).
+    """
+    client = TestClient(app)
+    resp = client.get("/health", headers={"Origin": "http://localhost:1420"})
+    assert resp.status_code == 200
+    assert resp.headers["access-control-allow-origin"] == "http://localhost:1420"
+
+
+def test_cors_allows_tauri_origin() -> None:
+    """The packaged Tauri app's WebView makes requests from `tauri://localhost`
+    on most platforms -- must be allowlisted same as the Vite dev origin."""
+    client = TestClient(app)
+    resp = client.get("/health", headers={"Origin": "tauri://localhost"})
+    assert resp.status_code == 200
+    assert resp.headers["access-control-allow-origin"] == "tauri://localhost"
+
+
+def test_cors_rejects_unlisted_origin() -> None:
+    """An arbitrary, non-allowlisted origin must NOT get
+    `Access-Control-Allow-Origin` echoed back -- confirms the allowlist is
+    scoped, not a wildcard or reflect-any-origin configuration."""
+    client = TestClient(app)
+    resp = client.get("/health", headers={"Origin": "http://evil.example.com"})
+    assert resp.status_code == 200
+    assert "access-control-allow-origin" not in resp.headers
+
+
 def test_health_reports_config_load_failure_without_raising(tmp_path: Path) -> None:
     bad_config_path = tmp_path / ".repo-translator" / "config.yaml"
     bad_config_path.parent.mkdir(parents=True, exist_ok=True)

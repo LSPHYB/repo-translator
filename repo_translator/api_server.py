@@ -24,6 +24,7 @@ import click
 import uvicorn
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from repo_translator import cache_manager, git_manager, sync
@@ -54,6 +55,31 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="repo-translator desktop API", lifespan=lifespan)
+
+# The desktop GUI is a browser-based WebView (Tauri 2) making same-machine
+# but cross-origin `fetch()`/WebSocket calls to this sidecar process -- this
+# is genuinely cross-origin even in the packaged app, not just a dev-mode
+# quirk (Tauri's WebView enforces normal browser CORS rules against
+# `http://127.0.0.1:<sidecar-port>`; see
+# https://github.com/dieharders/example-tauri-v2-python-server-sidecar for
+# the same pattern). Without this middleware, every browser-based request
+# from the frontend is rejected with no `Access-Control-Allow-Origin`
+# header, regardless of whether the JSON body itself is correct.
+#
+# Scoped to exactly the known desktop-frontend origins -- no wildcard `*`,
+# no dynamic origin reflection, no `allow_credentials`:
+#   - http://localhost:1420       -- `npm run dev` (Vite dev server)
+#   - tauri://localhost           -- packaged Tauri WebView origin (macOS/Linux)
+#   - http://127.0.0.1:1420       -- Vite dev server reached via loopback IP
+# `allow_origin_regex` additionally covers the `http://127.0.0.1:<port>`
+# family in case Vite's dev port ever changes from the documented 1420.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:1420", "tauri://localhost"],
+    allow_origin_regex=r"http://127\.0\.0\.1(:\d+)?",
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 _sync_all_lock = threading.Lock()
 _sync_all_running = False
