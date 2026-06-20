@@ -1,0 +1,21 @@
+<svg width="96" height="96" viewBox="0 0 96 96" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="repo-translator">
+  <defs>
+    <linearGradient id="rt-grad" x1="12" y1="14" x2="84" y2="82" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#00F2FE"></stop>
+      <stop offset="1" stop-color="#4FACFE"></stop>
+    </linearGradient>
+    <linearGradient id="rt-grad-soft" x1="0" y1="0" x2="96" y2="96" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#162032"></stop>
+      <stop offset="1" stop-color="#0B0F19"></stop>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="88" height="88" rx="24" fill="url(#rt-grad-soft)"></rect>
+  <rect x="4.75" y="4.75" width="86.5" height="86.5" rx="23.25" stroke="url(#rt-grad)" stroke-opacity="0.55" stroke-width="1.5"></rect>
+
+  <text x="27" y="44" font-family="Outfit, sans-serif" font-size="30" font-weight="800" fill="#E2E8F0" text-anchor="middle">A</text>
+
+  <path d="M30 58 H62" stroke="url(#rt-grad)" stroke-width="4" stroke-linecap="round"></path>
+  <path d="M56 51 L64 58 L56 65" stroke="url(#rt-grad)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none"></path>
+
+  <text x="68" y="46" font-family="&#39;Noto Sans SC&#39;, sans-serif" font-size="30" font-weight="700" fill="url(#rt-grad)" text-anchor="middle">文</text>
+</svg>

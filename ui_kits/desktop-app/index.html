@@ -1,0 +1,66 @@
+<!-- @dsCard group="Desktop App" viewport="1280x800" name="Desktop App" subtitle="Tauri desktop app — full click-through (Dashboard / Repos / Glossary / Settings / Console)" -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>repo-translator · Desktop App</title>
+<link rel="stylesheet" href="../../styles.css">
+<style>
+  html, body { height: 100%; }
+  body { margin: 0; overflow: hidden; }
+  #root { height: 100vh; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script src="../../_ds_bundle.js"></script>
+<script type="text/babel" src="Modal.jsx"></script>
+<script type="text/babel" src="PageHeader.jsx"></script>
+<script type="text/babel" src="AppShell.jsx"></script>
+<script type="text/babel" src="DashboardScreen.jsx"></script>
+<script type="text/babel" src="ReposScreen.jsx"></script>
+<script type="text/babel" src="GlossaryScreen.jsx"></script>
+<script type="text/babel" src="UsageScreen.jsx"></script>
+<script type="text/babel" src="SettingsScreen.jsx"></script>
+<script type="text/babel" src="ConsoleScreen.jsx"></script>
+<script type="text/babel">
+  const ds = window.RepoTranslatorDesignSystem_dab506;
+
+  function App() {
+    const [page, setPage] = React.useState('dashboard');
+    const [theme, setTheme] = React.useState('dark');
+    const [logsOpen, setLogsOpen] = React.useState(false);
+
+    React.useEffect(() => {
+      document.documentElement.dataset.theme = theme === 'light' ? 'light' : '';
+    }, [theme]);
+
+    const screens = {
+      dashboard: <window.DashboardScreen ds={ds} />,
+      repos: <window.ReposScreen ds={ds} />,
+      glossary: <window.GlossaryScreen ds={ds} />,
+      usage: <window.UsageScreen ds={ds} />,
+      settings: <window.SettingsScreen ds={ds} />,
+      logs: <window.ConsoleScreen ds={ds} />,
+    };
+
+    return (
+      <window.AppShell
+        page={page} onNav={setPage}
+        theme={theme} onTheme={setTheme}
+        logsOpen={logsOpen} onToggleLogs={() => setLogsOpen(o => !o)}
+        consoleNode={<window.ConsoleDrawer ds={ds} />}
+      >
+        {screens[page]}
+      </window.AppShell>
+    );
+  }
+
+  ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

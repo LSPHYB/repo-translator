@@ -1,0 +1,150 @@
+/* ── repo-translator · Color System ──────────────────────────────────────
+   Two themes: a deep, geeky Dark Mode (the hero look) and a bright,
+   high-contrast Light Mode. Base palette tokens are theme-independent;
+   semantic aliases (--bg, --text, --surface, --accent…) switch per theme.
+
+   Dark is the default (:root). Light is the [data-theme="light"] scope.
+   ──────────────────────────────────────────────────────────────────────── */
+
+:root {
+  /* ─── Slate scale (theme-independent base palette) ─── */
+  --slate-50:  #F8FAFC;
+  --slate-100: #F1F5F9;
+  --slate-200: #E2E8F0;
+  --slate-300: #CBD5E1;
+  --slate-400: #94A3B8;
+  --slate-500: #64748B;
+  --slate-600: #475569;
+  --slate-700: #334155;
+  --slate-800: #1E293B;
+  --slate-900: #0F172A;
+  --slate-950: #020617;
+
+  /* ─── Deep canvas tones (dark mode signature) ─── */
+  --ink-900: #0B0F19;   /* deepest background */
+  --ink-850: #0E1422;
+  --ink-800: #111A2B;
+  --ink-card: #162032;  /* glass card base (used at ~75% alpha) */
+
+  /* ─── Brand hues — gradient stops ─── */
+  /* Dark: aurora green → neon blue */
+  --aurora: #00F2FE;
+  --neon:   #4FACFE;
+  /* Light: morning sky → deep indigo */
+  --sky:    #38BDF8;
+  --indigo: #4F46E5;
+
+  /* ─── Semantic status hues (shared, lightly tuned per theme) ─── */
+  --green-500:  #10B981;   /* translated / connected */
+  --amber-500:  #F59E0B;   /* update pending */
+  --coral-500:  #FF6B6B;   /* error / alert (spec warning color) */
+  --violet-500: #8B5CF6;   /* info / accent secondary */
+
+  /* ═══════════════════════════════════════════════════════════
+     SEMANTIC ALIASES — DARK MODE (default)
+     ═══════════════════════════════════════════════════════════ */
+
+  /* Backgrounds */
+  --bg-base:    #0B0F19;
+  --bg-gradient: radial-gradient(1200px 800px at 15% -10%, #13203A 0%, rgba(19,32,58,0) 55%),
+                 radial-gradient(1000px 700px at 100% 0%, #0E2433 0%, rgba(14,36,51,0) 50%),
+                 linear-gradient(180deg, #0B0F19 0%, #090C14 100%);
+  --bg-elevated: #0E1422;
+
+  /* Glass surfaces */
+  --surface-card:    rgba(22, 32, 50, 0.75);
+  --surface-raised:  rgba(28, 40, 62, 0.85);
+  --surface-sunken:  rgba(9, 12, 20, 0.6);
+  --surface-glass-blur: 12px;
+
+  /* Text */
+  --text-primary:   #E2E8F0;
+  --text-secondary: #94A3B8;
+  --text-tertiary:  #64748B;
+  --text-on-accent: #06121F;   /* dark ink sits on bright gradient */
+  --text-inverse:   #0F172A;
+
+  /* Borders & hairlines */
+  --border-subtle:  rgba(148, 163, 184, 0.12);
+  --border-default: rgba(148, 163, 184, 0.18);
+  --border-strong:  rgba(148, 163, 184, 0.30);
+
+  /* Accent (resolved single colors for non-gradient use) */
+  --accent:        #4FACFE;
+  --accent-strong: #00F2FE;
+  --accent-soft:   rgba(79, 172, 254, 0.14);   /* tinted fills */
+  --accent-ring:   rgba(79, 172, 254, 0.45);
+
+  /* Brand gradient (the WOW element) */
+  --gradient-brand: linear-gradient(120deg, #00F2FE 0%, #4FACFE 100%); /* @kind color */
+  --gradient-brand-soft: linear-gradient(120deg, rgba(0,242,254,0.16) 0%, rgba(79,172,254,0.16) 100%); /* @kind color */
+
+  /* Status (foreground / tinted background pairs) */
+  --status-ok:        #34D399;
+  --status-ok-bg:     rgba(16, 185, 129, 0.14);
+  --status-warn:      #FBBF24;
+  --status-warn-bg:   rgba(245, 158, 11, 0.14);
+  --status-error:     #FF6B6B;
+  --status-error-bg:  rgba(255, 107, 107, 0.14);
+  --status-muted:     #64748B;
+  --status-muted-bg:  rgba(100, 116, 139, 0.14);
+
+  /* Console (debug log panel) */
+  --console-bg:    #06090F;
+  --console-text:  #CBD5E1;
+  --console-dim:   #64748B;
+  --console-info:  #4FACFE;
+  --console-warn:  #FBBF24;
+  --console-error: #FF6B6B;
+  --console-ok:    #34D399;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   SEMANTIC ALIASES — LIGHT MODE
+   ═══════════════════════════════════════════════════════════════════════ */
+[data-theme="light"] {
+  --bg-base:    #F8FAFC;
+  --bg-gradient: radial-gradient(1100px 700px at 10% -10%, #EAF2FF 0%, rgba(234,242,255,0) 55%),
+                 radial-gradient(900px 600px at 100% 0%, #EAF7FF 0%, rgba(234,247,255,0) 50%),
+                 linear-gradient(180deg, #F8FAFC 0%, #F1F5F9 100%);
+  --bg-elevated: #FFFFFF;
+
+  --surface-card:    rgba(255, 255, 255, 0.80);
+  --surface-raised:  rgba(255, 255, 255, 0.92);
+  --surface-sunken:  rgba(241, 245, 249, 0.7);
+
+  --text-primary:   #0F172A;
+  --text-secondary: #64748B;
+  --text-tertiary:  #94A3B8;
+  --text-on-accent: #FFFFFF;
+  --text-inverse:   #F8FAFC;
+
+  --border-subtle:  rgba(148, 163, 184, 0.18);
+  --border-default: rgba(148, 163, 184, 0.28);
+  --border-strong:  rgba(100, 116, 139, 0.40);
+
+  --accent:        #4F46E5;
+  --accent-strong: #38BDF8;
+  --accent-soft:   rgba(79, 70, 229, 0.08);
+  --accent-ring:   rgba(79, 70, 229, 0.35);
+
+  --gradient-brand: linear-gradient(120deg, #38BDF8 0%, #4F46E5 100%); /* @kind color */
+  --gradient-brand-soft: linear-gradient(120deg, rgba(56,189,248,0.12) 0%, rgba(79,70,229,0.12) 100%); /* @kind color */
+
+  --status-ok:        #059669;
+  --status-ok-bg:     rgba(16, 185, 129, 0.12);
+  --status-warn:      #D97706;
+  --status-warn-bg:   rgba(245, 158, 11, 0.12);
+  --status-error:     #E11D48;
+  --status-error-bg:  rgba(255, 107, 107, 0.12);
+  --status-muted:     #94A3B8;
+  --status-muted-bg:  rgba(100, 116, 139, 0.10);
+
+  --console-bg:    #0E1422;   /* console stays dark even in light mode */
+  --console-text:  #CBD5E1;
+  --console-dim:   #64748B;
+  --console-info:  #60A5FA;
+  --console-warn:  #FBBF24;
+  --console-error: #FF8585;
+  --console-ok:    #34D399;
+}

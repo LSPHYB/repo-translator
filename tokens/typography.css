@@ -1,0 +1,51 @@
+/* ── repo-translator · Typography ────────────────────────────────────────
+   Outfit  → display / headings / numeric stats (geometric, confident)
+   Inter   → body, labels, UI text
+   JetBrains Mono → console, code, hashes, API keys
+   Noto Sans SC   → CJK fallback (UI copy is Simplified Chinese)
+   ──────────────────────────────────────────────────────────────────────── */
+
+:root {
+  /* Families — CJK face is layered into every UI stack */
+  --font-display: 'Outfit', 'Noto Sans SC', system-ui, sans-serif;
+  --font-sans:    'Inter', 'Noto Sans SC', system-ui, -apple-system, sans-serif;
+  --font-mono:    'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  /* Type scale (1.250 major-third-ish, tuned for a dense desktop app) */
+  --text-2xs:  11px;
+  --text-xs:   12px;
+  --text-sm:   13px;
+  --text-base: 14px;   /* app body default */
+  --text-md:   15px;
+  --text-lg:   17px;
+  --text-xl:   20px;
+  --text-2xl:  24px;
+  --text-3xl:  30px;
+  --text-4xl:  38px;
+  --text-5xl:  48px;
+
+  /* Weights */
+  --weight-regular:  400;
+  --weight-medium:   500;
+  --weight-semibold: 600;
+  --weight-bold:     700;
+  --weight-extra:    800;
+
+  /* Line heights */
+  --leading-tight:   1.15;
+  --leading-snug:    1.35;
+  --leading-normal:  1.5;
+  --leading-relaxed: 1.65;
+
+  /* Letter spacing */
+  --tracking-tight:  -0.02em;
+  --tracking-snug:   -0.01em;
+  --tracking-normal: 0;
+  --tracking-wide:   0.02em;
+  --tracking-caps:   0.08em;   /* uppercase eyebrows / section labels */
+
+  /* ─── Semantic role aliases ─── */
+  --font-stat:    var(--font-display);   /* big dashboard numbers */
+  --font-body:    var(--font-sans);
+  --font-code:    var(--font-mono);
+}

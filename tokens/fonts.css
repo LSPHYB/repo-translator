@@ -1,0 +1,11 @@
+/* ── repo-translator · Webfonts ──────────────────────────────────────────
+   The desktop app spec calls for a modern sans-serif (Inter / Outfit), a
+   terminal monospace for the debug console, and a CJK face since the entire
+   UI is in Simplified Chinese. Loaded from Google Fonts.
+
+   SUBSTITUTION NOTE: the source is a CLI with no bundled fonts, so these are
+   chosen to match the spec's stated intent (Inter / Outfit / 微软雅黑). Swap
+   in licensed binaries if you ship a packaged build.
+   ──────────────────────────────────────────────────────────────────────── */
+
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Noto+Sans+SC:wght@400;500;700&display=swap');
