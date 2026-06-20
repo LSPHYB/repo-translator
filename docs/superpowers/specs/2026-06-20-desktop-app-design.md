@@ -52,10 +52,22 @@ repo-translator/                  # 现有 Python 包不变
 - `GET  /repos` — 包装 `config.load_config()`，返回 `repos` 列表 + 各自最近一次 `sync_repo` 结果状态
 - `POST /repos` — 包装现有 `cli.add` 里的判断逻辑（复用 `_infer_repo_name`、`_is_url` 区分 managed/external），写回 `config.save_config`
 - `DELETE /repos/{name}` — 包装 `cli.remove`
-- `POST /repos/{name}/sync` — 调用 `sync.sync_repo(repo_config, app_config, cache)`，对应设计稿"立即同步"按钮；返回后 `cache_manager.save`
+- `POST /repos/{name}/sync` — 调用 `sync.sync_repo(repo_config, app_config, cache)`，对应设计稿 `RepoCard` 的"立即同步"按钮（单仓库粒度）；返回后 `cache_manager.save`
+- `POST /repos/{name}/files/{path:path}/sync` — 单文件粒度重译。需要给 `sync.sync_repo` 新增可选参数 `only_files: list[str] | None`：传入时跳过内部的 `cache_manager.get_changed_files` 全量 diff，直接对指定文件跑 `_process_one_file`（仍然走相同的 markers/glossary/写入流程），用于"某个文件译错了，单独重试"场景。对应 `ReposScreen.jsx` 文件列表里每一行新增一个重译入口（目前那段 UI 只是展示 mock 状态，需要补上交互）
+- `POST /repos/sync-all` — 对应 Dashboard"全量同步"，遍历所有仓库依次调用 `/repos/{name}/sync`（仍是仓库粒度的批量触发，不是新的执行路径）
+- `POST /repos/sync-all/cancel` — 对应 Dashboard"停止全部"，见下方"取消语义"
 - `GET/PUT /config` — 包装现有 `cli._config_show`/`_nested_get`/`_nested_set`（术语表、`output.exclude`、引擎设置走这里）
 - `WS /logs` — 推送结构化日志。最小改动：给 `sync.py`/`scheduler.py` 用的 `logger`（`logging.getLogger(__name__)`）加一个自定义 `logging.Handler`，把日志记录序列化为 NDJSON 推给所有已连接的 WebSocket 客户端；CLI 端的日志输出格式不受影响
 - App 启动时常驻运行调度循环：给 `scheduler.py` 新增一个非阻塞的 `start_background()` 变体（用 asyncio task 跑 APScheduler，区别于 CLI 用的 `BlockingScheduler`），`run_watch` 本身不改动
+
+### 取消语义（"停止全部"按钮）
+
+`sync_repo` 内部用 `ThreadPoolExecutor` 并发处理改动文件，目前是阻塞式跑完所有 future 才返回，没有取消入口。"停止全部"按钮采用**协作式取消、只丢弃尚未开始的任务**：
+
+- `api_server.py` 维护一个进程级取消标记（按"本次批量同步"为单位，不是全局开关）
+- 给 `sync.sync_repo` 新增一个可选的取消检查回调参数（如 `should_cancel: Callable[[], bool] | None`），在向 `ThreadPoolExecutor` 提交下一个文件的 future **之前**检查；已经提交、正在执行的 LLM API 调用照常跑完（避免半写文件、cache 与实际输出不一致的风险）
+- 已完成的文件正常计入 cache；被取消跳过的文件下次同步时因 blob_hash 未变会被重新检测为"待同步"，不会丢失
+- 不支持强制中断已发出的 LLM API 请求（如需要，是后续可选的增强，当前不做）
 
 ## 前端
 
@@ -82,4 +94,4 @@ repo-translator/                  # 现有 Python 包不变
 
 - `scheduler.py` 的 `start_background()` 变体与 CLI 的 `BlockingScheduler` 共享 `_make_job` 等内部函数，实施时需确认两种调度模式不会在同一进程内冲突（GUI 进程不会同时跑两套调度器）
 - PyInstaller 打包 `openai`/`anthropic` 这类大型 SDK 可能命中隐藏 import 问题，需要在实施阶段验证打包产物能正常启动
-- 设计稿里"全量同步/停止全部"按钮的语义（一次性触发 vs 切换后台 watch 开关）尚未细化，实施计划阶段需要明确：当前假设是"watch 调度循环随 sidecar 启动后一直运行，两个按钮只是手动触发/取消一次性 sync，不影响后台调度开关"
+- "全量同步/停止全部"按钮语义已明确：watch 调度循环随 sidecar 启动后一直在后台运行，这两个按钮只是手动触发/取消一次性批量 sync，不影响后台调度开关（即不会停掉 `watch`）
