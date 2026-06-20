@@ -21,11 +21,14 @@ dependencies = [
     "rich",
     "pathspec",
     "pyyaml>=6.0.3",
+    "fastapi",
+    "uvicorn[standard]",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest",
+    "httpx",
 ]
 
 [project.scripts]
