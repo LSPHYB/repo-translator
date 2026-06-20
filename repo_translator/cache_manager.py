@@ -36,10 +36,20 @@ import os
 import tempfile
 from pathlib import Path
 
+# `REPO_TRANSLATOR_HOME`, if set, overrides the base directory this path is
+# computed under -- mirrors `config.py`'s `_REPO_TRANSLATOR_HOME` (same env
+# var, same default, same import-time-only evaluation rationale). Kept as a
+# separate computation (rather than importing from `config.py`) to avoid
+# introducing a config -> cache_manager import dependency that doesn't
+# otherwise exist.
+_REPO_TRANSLATOR_HOME = Path(
+    os.environ.get("REPO_TRANSLATOR_HOME", str(Path.home() / ".repo-translator"))
+).expanduser()
+
 # Default cache location, parallel to `config.DEFAULT_CONFIG_PATH`. Kept here
 # (rather than in `cli.py`) so `scheduler.py` and `cli.py` share a single
 # source of truth instead of duplicating/drifting on the same path.
-DEFAULT_CACHE_PATH: Path = Path.home() / ".repo-translator" / "cache.json"
+DEFAULT_CACHE_PATH: Path = _REPO_TRANSLATOR_HOME / "cache.json"
 
 
 def load(cache_path: Path) -> dict:

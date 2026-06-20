@@ -23,7 +23,26 @@ def test_health_returns_ok() -> None:
     client = TestClient(app)
     resp = client.get("/health")
     assert resp.status_code == 200
-    assert resp.json() == {"status": "ok"}
+    body = resp.json()
+    assert body["status"] == "ok"
+    assert body["config_loaded"] is True
+    assert body["cache_loaded"] is True
+    assert isinstance(body["version"], str) and body["version"]
+
+
+def test_health_reports_config_load_failure_without_raising(tmp_path: Path) -> None:
+    bad_config_path = tmp_path / ".repo-translator" / "config.yaml"
+    bad_config_path.parent.mkdir(parents=True, exist_ok=True)
+    bad_config_path.write_text("not: valid: yaml: [", encoding="utf-8")
+
+    with patch("repo_translator.config.DEFAULT_CONFIG_PATH", bad_config_path):
+        client = TestClient(app)
+        resp = client.get("/health")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "ok"
+    assert body["config_loaded"] is False
 
 
 @contextmanager

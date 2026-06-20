@@ -117,7 +117,18 @@ class AppConfig(BaseModel):
 # Config file I/O
 # ---------------------------------------------------------------------------
 
-DEFAULT_CONFIG_PATH: Path = Path.home() / ".repo-translator" / "config.yaml"
+# `REPO_TRANSLATOR_HOME`, if set, overrides the base directory both this
+# module's `DEFAULT_CONFIG_PATH` and `cache_manager.DEFAULT_CACHE_PATH` are
+# computed under (default: `~/.repo-translator`). Evaluated once at import
+# time -- this only needs to work for a freshly-started process (e.g.
+# `api_server.main()`'s dynamic-port entry point used for manual/test
+# verification), not for live-patching an already-running process. Additive
+# only: callers that never set the env var get exactly the prior behavior.
+_REPO_TRANSLATOR_HOME = Path(
+    os.environ.get("REPO_TRANSLATOR_HOME", str(Path.home() / ".repo-translator"))
+).expanduser()
+
+DEFAULT_CONFIG_PATH: Path = _REPO_TRANSLATOR_HOME / "config.yaml"
 
 
 def _expand_path(path: Path | None) -> Path:

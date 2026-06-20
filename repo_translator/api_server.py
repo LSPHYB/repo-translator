@@ -10,15 +10,18 @@ Run with: `uvicorn repo_translator.api_server:app --port 8000`
 from __future__ import annotations
 
 import asyncio
+import importlib.metadata
 import json
 import logging
 import queue
+import socket
 import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
 import click
+import uvicorn
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
@@ -107,7 +110,41 @@ async def _drain_log_queue() -> None:
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok"}
+    """Liveness check: "is the process alive and able to answer requests at
+    all". `config_loaded`/`cache_loaded` are cheap, synchronous checks that
+    Task 11's Tauri startup gate needs to know the backend can actually do
+    work (not just that the HTTP server is up) -- see the design note in
+    docs/superpowers/plans/2026-06-20-desktop-frontend.md Task 1: this stays
+    liveness-flavored on purpose; deeper readiness checks (translator API key
+    validity, network reachability) belong in a future `/ready` endpoint, not
+    more fields bolted onto `/health`.
+
+    Both checks swallow their own exceptions -- a corrupt config.yaml or
+    cache.json must never turn a liveness probe into a 500.
+    """
+    try:
+        load_config()
+        config_loaded = True
+    except Exception:
+        config_loaded = False
+
+    try:
+        cache_manager.load(cache_manager.DEFAULT_CACHE_PATH)
+        cache_loaded = True
+    except Exception:
+        cache_loaded = False
+
+    try:
+        version = importlib.metadata.version("repo-translator")
+    except importlib.metadata.PackageNotFoundError:
+        version = "unknown"
+
+    return {
+        "status": "ok",
+        "config_loaded": config_loaded,
+        "cache_loaded": cache_loaded,
+        "version": version,
+    }
 
 
 @app.get("/config")
@@ -295,3 +332,42 @@ async def logs_ws(websocket: WebSocket) -> None:
         pass
     finally:
         _connected_websockets.discard(websocket)
+
+
+def main() -> None:
+    """Entry point for the desktop app's Tauri sidecar (Task 11) to spawn as
+    a subprocess.
+
+    Binds an OS-assigned port (port=0) up front so the packaged app never
+    collides with a stale instance, a second app launch, or an unrelated
+    process already holding a fixed port. Prints exactly one JSON line to
+    stdout -- BEFORE logging is configured or uvicorn/any dependency gets a
+    chance to print anything of its own -- so the parent process (today:
+    manual verification; eventually: Task 11's Rust sidecar spawn) can read
+    stdout line-by-line, parse the *first* line as JSON, and extract `port`
+    without depending on a fragile plain-text format.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+
+    print(json.dumps({"type": "startup", "port": port}), flush=True)
+
+    # uvicorn 0.49.0: `Server.run`/`Server.serve` accept a pre-bound
+    # `sockets: list[socket.socket]` list -- this is the documented mechanism
+    # for serving on an already-bound socket. (The alternative,
+    # `uvicorn.run(app, fd=sock.fileno())`, re-wraps the fd via
+    # `socket.fromfd(fd, socket.AF_UNIX, socket.SOCK_STREAM)` internally,
+    # which is uvicorn's systemd-socket-activation path and re-labels the
+    # socket family as AF_UNIX even for a TCP socket -- it works, but
+    # `Server.run(sockets=[sock])` uses our actual already-correct AF_INET
+    # socket object directly and is the more explicit, documented-for-this
+    # exact purpose API, so we use it instead.)
+    config = uvicorn.Config(app, lifespan="on")
+    server = uvicorn.Server(config)
+    server.run(sockets=[sock])
+
+
+if __name__ == "__main__":
+    main()
