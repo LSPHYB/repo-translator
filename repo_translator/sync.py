@@ -41,13 +41,20 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def sync_repo(repo_config: RepoConfig, app_config: AppConfig, cache: dict) -> dict:
+def sync_repo(
+    repo_config: RepoConfig,
+    app_config: AppConfig,
+    cache: dict,
+    *,
+    only_files: list[str] | None = None,
+) -> dict:
     """Run one full sync cycle for ``repo_config``.
 
     Steps (per design.md S3.1):
     1. ``clone_or_pull`` -- obtain/update the local checkout.
     2. ``get_file_blob_map`` -- build ``{path: blob_hash}`` for HEAD.
-    3. ``cache_manager.get_changed_files`` -- diff against ``cache``.
+    3. ``cache_manager.get_changed_files`` -- diff against ``cache`` (skipped
+       in favor of ``only_files`` when that argument is given).
     4. Concurrently translate + write output for every changed file.
     5. Update and return the ``cache`` dict (not persisted to disk here).
 
@@ -77,10 +84,24 @@ def sync_repo(repo_config: RepoConfig, app_config: AppConfig, cache: dict) -> di
     file_blob_map = get_file_blob_map(repo_path)
     md_files = list_md_files(file_blob_map)
 
-    # 3. Diff against cache to find changed files
-    changed_files = cache_manager.get_changed_files(
-        repo_config.name, file_blob_map, cache
-    )
+    # 3. Diff against cache to find changed files, unless the caller asked
+    # for a specific subset (only_files) -- used by the desktop API's
+    # single-file resync endpoint to bypass the blob-hash diff entirely.
+    if only_files is not None:
+        changed_files = [
+            f for f in only_files if f in file_blob_map and f.endswith(".md")
+        ]
+        for requested in only_files:
+            if requested not in file_blob_map:
+                logger.warning(
+                    "Requested file %r not found in repo %r, skipping",
+                    requested,
+                    repo_config.name,
+                )
+    else:
+        changed_files = cache_manager.get_changed_files(
+            repo_config.name, file_blob_map, cache
+        )
 
     # Filter out files matching output.exclude glob patterns
     exclude_patterns = app_config.output.exclude

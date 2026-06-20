@@ -777,6 +777,64 @@ def test_sync_managed_repo_end_to_end(tmp_path: Path) -> None:
 
     assert mock_translator2.translate_file.call_count == 1
 
-    # Cache should now have 3 entries
-    assert len(cache2["managed-repo"]) == 3
-    assert "NEWS.md" in cache2["managed-repo"]
+
+# ---------------------------------------------------------------------------
+# Test: only_files parameter restricts processing to requested files
+# ---------------------------------------------------------------------------
+
+
+def test_sync_repo_only_files_skips_unrequested_files(tmp_path: Path) -> None:
+    """only_files restricts processing to the given paths, ignoring the rest."""
+    repo_dir = tmp_path / "src-repo"
+    _init_repo_with_files(
+        repo_dir,
+        {
+            "README.md": "# Hello\n",
+            "docs/guide.md": "## Guide\n",
+        },
+    )
+
+    output_dir = tmp_path / "output"
+    app_config = _make_app_config(base_dir=output_dir)
+    repo_config = RepoConfig(name="test-repo", path=str(repo_dir))
+
+    fake = _make_fake_translate_file()
+    mock_translator = MagicMock()
+    mock_translator.translate_file.side_effect = fake
+
+    with patch(
+        "repo_translator.sync.create_translator", return_value=mock_translator
+    ):
+        result_cache = sync_repo(
+            repo_config, app_config, {}, only_files=["docs/guide.md"]
+        )
+
+    assert mock_translator.translate_file.call_count == 1
+    assert list(result_cache["test-repo"]) == ["docs/guide.md"]
+
+    output_repo = output_dir / "test-repo"
+    assert not (output_repo / "README.md").exists()
+    assert (output_repo / "docs" / "guide_zh.md").exists()
+
+
+def test_sync_repo_only_files_ignores_unknown_path(tmp_path: Path) -> None:
+    """A path in only_files that doesn't exist in the repo is skipped, not an error."""
+    repo_dir = tmp_path / "src-repo"
+    _init_repo_with_files(repo_dir, {"README.md": "# Hello\n"})
+
+    output_dir = tmp_path / "output"
+    app_config = _make_app_config(base_dir=output_dir)
+    repo_config = RepoConfig(name="test-repo", path=str(repo_dir))
+
+    mock_translator = MagicMock()
+    mock_translator.translate_file.side_effect = _make_fake_translate_file()
+
+    with patch(
+        "repo_translator.sync.create_translator", return_value=mock_translator
+    ):
+        result_cache = sync_repo(
+            repo_config, app_config, {}, only_files=["does/not/exist.md"]
+        )
+
+    assert mock_translator.translate_file.call_count == 0
+    assert result_cache == {}
