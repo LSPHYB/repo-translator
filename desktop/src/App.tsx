@@ -1,50 +1,60 @@
-import { useState } from "react";
-import reactLogo from "./assets/react.svg";
-import { invoke } from "@tauri-apps/api/core";
-import "./App.css";
+/**
+ * App — top-level shell: owns `page`/`theme`/`logsOpen` state exactly as the
+ * mockup's inline `App` function did (ui_kits/desktop-app/index.html's
+ * `<script type="text/babel">` block). Renders AppShell with the active
+ * screen as children and the console drawer as `consoleNode`.
+ *
+ * Screens are placeholders for now (Task 4-8 fill in Dashboard / Repos /
+ * Glossary / Usage / Settings / Console with real content and `api.ts`
+ * wiring) — this task only ports navigation, theme, and the console-drawer
+ * toggle.
+ */
+import { useEffect, useState } from 'react';
+import AppShell, { type PageId } from './components/AppShell';
+import PlaceholderScreen from './screens/PlaceholderScreen';
+import ConsoleDrawerPlaceholder from './screens/ConsoleDrawerPlaceholder';
+
+export type Theme = 'light' | 'dark';
+
+const SCREEN_TITLES: Record<PageId, string> = {
+  dashboard: '仪表盘',
+  repos: '仓库管理',
+  glossary: '术语表',
+  usage: '用量统计',
+  settings: '系统设置',
+  logs: '调试台',
+};
 
 function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
+  const [page, setPage] = useState<PageId>('dashboard');
+  const [theme, setTheme] = useState<Theme>('dark');
+  const [logsOpen, setLogsOpen] = useState(false);
 
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
-  }
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme === 'light' ? 'light' : '';
+  }, [theme]);
+
+  const screens: Record<PageId, React.ReactNode> = {
+    dashboard: <PlaceholderScreen title={SCREEN_TITLES.dashboard} />,
+    repos: <PlaceholderScreen title={SCREEN_TITLES.repos} />,
+    glossary: <PlaceholderScreen title={SCREEN_TITLES.glossary} />,
+    usage: <PlaceholderScreen title={SCREEN_TITLES.usage} />,
+    settings: <PlaceholderScreen title={SCREEN_TITLES.settings} />,
+    logs: <PlaceholderScreen title={SCREEN_TITLES.logs} />,
+  };
 
   return (
-    <main className="container">
-      <h1>Welcome to Tauri + React</h1>
-
-      <div className="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
-
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
-        />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
-    </main>
+    <AppShell
+      page={page}
+      onNav={setPage}
+      theme={theme}
+      onTheme={setTheme}
+      logsOpen={logsOpen}
+      onToggleLogs={() => setLogsOpen((o) => !o)}
+      consoleNode={<ConsoleDrawerPlaceholder />}
+    >
+      {screens[page]}
+    </AppShell>
   );
 }
 

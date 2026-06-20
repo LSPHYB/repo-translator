@@ -1,6 +1,6 @@
 /* ── repo-translator Design System · ES module port ──────────────────────
    Ported from the repo root's `_ds_bundle.js` (window.RepoTranslatorDesignSystem_dab506
-   namespace bundle, generated from components/**/*.jsx). This is a 1:1 behavioral
+   namespace bundle, generated from components/ (all .jsx files)). This is a 1:1 behavioral
    port — component names, props, and markup are unchanged; only the module
    wrapper (named exports instead of a window-global namespace object) differs.
 
