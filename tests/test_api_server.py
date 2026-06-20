@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
+from collections.abc import Callable
+from contextlib import contextmanager
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -19,9 +22,14 @@ def test_health_returns_ok() -> None:
     assert resp.json() == {"status": "ok"}
 
 
+@contextmanager
 def _patch_config_path(tmp_path: Path):
     config_path = tmp_path / ".repo-translator" / "config.yaml"
-    return patch("repo_translator.config.DEFAULT_CONFIG_PATH", config_path)
+    cache_path = tmp_path / ".repo-translator" / "cache.json"
+    with patch("repo_translator.config.DEFAULT_CONFIG_PATH", config_path), patch(
+        "repo_translator.cache_manager.DEFAULT_CACHE_PATH", cache_path
+    ):
+        yield config_path
 
 
 def test_get_config_returns_defaults(tmp_path: Path) -> None:
@@ -149,4 +157,71 @@ def test_delete_repo_missing_returns_404(tmp_path: Path) -> None:
     with _patch_config_path(tmp_path):
         client = TestClient(app)
         resp = client.delete("/repos/does-not-exist")
+    assert resp.status_code == 404
+
+
+def _make_fake_translate_file() -> Callable[[str, list], str]:
+    _MARKED_RE = re.compile(r"⟦(\d+)⟧(.*?)⟦/\1⟧", re.DOTALL)
+
+    def _replace(m: re.Match) -> str:
+        return f"⟦{m.group(1)}⟧[ZH] {m.group(2)} [/ZH]⟦/{m.group(1)}⟧"
+
+    def _translate_file(marked_source: str, glossary: list) -> str:
+        return _MARKED_RE.sub(_replace, marked_source)
+
+    return _translate_file
+
+
+def test_sync_repo_endpoint_translates_changed_files(tmp_path: Path) -> None:
+    repo_dir = tmp_path / "my-project"
+    _init_git_repo(repo_dir, {"README.md": "# Hi\n", "docs/guide.md": "## G\n"})
+
+    mock_translator = MagicMock()
+    mock_translator.translate_file.side_effect = _make_fake_translate_file()
+
+    with _patch_config_path(tmp_path), patch(
+        "repo_translator.sync.create_translator", return_value=mock_translator
+    ):
+        client = TestClient(app)
+        client.post("/repos", json={"url_or_path": str(repo_dir)})
+
+        resp = client.post("/repos/my-project/sync")
+        assert resp.status_code == 200
+        assert resp.json() == {"name": "my-project", "files_succeeded": 2}
+
+
+def test_sync_repo_endpoint_404_for_unknown_repo(tmp_path: Path) -> None:
+    with _patch_config_path(tmp_path):
+        client = TestClient(app)
+        resp = client.post("/repos/does-not-exist/sync")
+    assert resp.status_code == 404
+
+
+def test_sync_file_endpoint_translates_one_file(tmp_path: Path) -> None:
+    repo_dir = tmp_path / "my-project"
+    _init_git_repo(repo_dir, {"README.md": "# Hi\n", "docs/guide.md": "## G\n"})
+
+    mock_translator = MagicMock()
+    mock_translator.translate_file.side_effect = _make_fake_translate_file()
+
+    with _patch_config_path(tmp_path), patch(
+        "repo_translator.sync.create_translator", return_value=mock_translator
+    ):
+        client = TestClient(app)
+        client.post("/repos", json={"url_or_path": str(repo_dir)})
+
+        resp = client.post("/repos/my-project/files/docs/guide.md/sync")
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "name": "my-project",
+            "path": "docs/guide.md",
+            "succeeded": True,
+        }
+        assert mock_translator.translate_file.call_count == 1
+
+
+def test_sync_file_endpoint_404_for_unknown_repo(tmp_path: Path) -> None:
+    with _patch_config_path(tmp_path):
+        client = TestClient(app)
+        resp = client.post("/repos/does-not-exist/files/a.md/sync")
     assert resp.status_code == 404

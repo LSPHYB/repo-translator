@@ -14,7 +14,7 @@ import click
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-from repo_translator import cache_manager, git_manager
+from repo_translator import cache_manager, git_manager, sync
 from repo_translator.cli import _find_repo_by_name, _infer_repo_name, _is_git_repo, _is_url
 from repo_translator.config import AppConfig, RepoConfig, load_config, save_config
 
@@ -124,3 +124,39 @@ def delete_repo(name: str) -> None:
 
     cfg.repos = [r for r in cfg.repos if r.name != name]
     save_config(cfg)
+
+
+@app.post("/repos/{name}/sync")
+def sync_repo_endpoint(name: str) -> dict:
+    cfg = load_config()
+    try:
+        repo_config = _find_repo_by_name(cfg, name)
+    except click.ClickException as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    cache = cache_manager.load(cache_manager.DEFAULT_CACHE_PATH)
+    before = len(cache.get(name, {}))
+    cache = sync.sync_repo(repo_config, cfg, cache)
+    cache_manager.save(cache_manager.DEFAULT_CACHE_PATH, cache)
+    after = len(cache.get(name, {}))
+    return {"name": name, "files_succeeded": after - before}
+
+
+@app.post("/repos/{name}/files/{path:path}/sync")
+def sync_file_endpoint(name: str, path: str) -> dict:
+    cfg = load_config()
+    try:
+        repo_config = _find_repo_by_name(cfg, name)
+    except click.ClickException as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    cache = cache_manager.load(cache_manager.DEFAULT_CACHE_PATH)
+    cache = sync.sync_repo(repo_config, cfg, cache, only_files=[path])
+    cache_manager.save(cache_manager.DEFAULT_CACHE_PATH, cache)
+
+    succeeded = path in cache.get(name, {})
+    if not succeeded:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to translate '{path}'."
+        )
+    return {"name": name, "path": path, "succeeded": True}
