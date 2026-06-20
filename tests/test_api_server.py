@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
 
+from repo_translator import api_server
 from repo_translator.api_server import app
 from repo_translator.config import AppConfig, OutputConfig, save_config
 
@@ -343,3 +344,15 @@ def test_sync_all_rejects_concurrent_runs(tmp_path: Path) -> None:
         t.join(timeout=5)
 
     assert conflict_resp.status_code == 409
+
+
+def test_lifespan_starts_and_stops_background_scheduler(tmp_path: Path) -> None:
+    with _patch_config_path(tmp_path):
+        save_config(AppConfig(repos=[]), tmp_path / ".repo-translator" / "config.yaml")
+        with TestClient(app) as client:
+            resp = client.get("/health")
+            assert resp.status_code == 200
+            assert api_server._background_scheduler is not None
+            assert api_server._background_scheduler.running is True
+
+    assert api_server._background_scheduler is None

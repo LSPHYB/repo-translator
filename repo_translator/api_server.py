@@ -8,18 +8,35 @@ both share. See docs/superpowers/specs/2026-06-20-desktop-app-design.md.
 from __future__ import annotations
 
 import threading
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
 import click
+from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from repo_translator import cache_manager, git_manager, sync
+from repo_translator import scheduler as scheduler_module
 from repo_translator.cli import _find_repo_by_name, _infer_repo_name, _is_git_repo, _is_url
 from repo_translator.config import AppConfig, RepoConfig, load_config, save_config
 
-app = FastAPI(title="repo-translator desktop API")
+_background_scheduler: BackgroundScheduler | None = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global _background_scheduler
+    cfg = load_config()
+    _background_scheduler = scheduler_module.start_background(cfg)
+    yield
+    if _background_scheduler is not None:
+        scheduler_module.stop_background(_background_scheduler)
+        _background_scheduler = None
+
+
+app = FastAPI(title="repo-translator desktop API", lifespan=lifespan)
 
 _sync_all_lock = threading.Lock()
 _sync_all_running = False

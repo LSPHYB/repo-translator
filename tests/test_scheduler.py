@@ -8,6 +8,7 @@ to exercise the per-repo job body without waiting for real intervals.
 
 from __future__ import annotations
 
+from datetime import timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -15,6 +16,7 @@ import pytest
 
 from repo_translator import scheduler
 from repo_translator.config import AppConfig, RepoConfig, SyncConfig
+from repo_translator.scheduler import start_background, stop_background
 
 
 def _make_app_config(num_repos: int, interval_hours: int = 6) -> AppConfig:
@@ -155,3 +157,54 @@ def test_job_exception_is_logged_not_raised(caplog: pytest.LogCaptureFixture) ->
             jobs[0].func()  # must not raise
 
     assert "repo0" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Non-blocking background scheduler (used by the desktop API server)
+# ---------------------------------------------------------------------------
+
+
+def test_start_background_registers_one_job_per_repo(tmp_path: Path) -> None:
+    app_config = AppConfig(
+        repos=[
+            RepoConfig(name="a", path=str(tmp_path / "a")),
+            RepoConfig(name="b", path=str(tmp_path / "b")),
+        ],
+        sync=SyncConfig(interval_hours=6),
+    )
+    bg = start_background(app_config)
+    try:
+        jobs = {j.id: j for j in bg.get_jobs()}
+        assert set(jobs) == {"a", "b"}
+        assert jobs["a"].trigger.interval == timedelta(hours=6)
+    finally:
+        stop_background(bg)
+
+
+def test_start_background_interval_override(tmp_path: Path) -> None:
+    app_config = AppConfig(
+        repos=[RepoConfig(name="a", path=str(tmp_path / "a"))],
+        sync=SyncConfig(interval_hours=6),
+    )
+    bg = start_background(app_config, interval_override=2)
+    try:
+        job = bg.get_job("a")
+        assert job.trigger.interval == timedelta(hours=2)
+    finally:
+        stop_background(bg)
+
+
+def test_start_background_returns_running_scheduler(tmp_path: Path) -> None:
+    app_config = AppConfig(repos=[])
+    bg = start_background(app_config)
+    try:
+        assert bg.running is True
+    finally:
+        stop_background(bg)
+
+
+def test_stop_background_shuts_down_scheduler(tmp_path: Path) -> None:
+    app_config = AppConfig(repos=[])
+    bg = start_background(app_config)
+    stop_background(bg)
+    assert bg.running is False

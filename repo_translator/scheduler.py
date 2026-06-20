@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 
+from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.schedulers.blocking import BlockingScheduler
 
 from repo_translator import cache_manager, sync
@@ -73,3 +74,38 @@ def run_watch(app_config: AppConfig, interval_override: int | None) -> None:
         )
 
     scheduler.start()
+
+
+def start_background(
+    app_config: AppConfig, interval_override: int | None = None
+) -> BackgroundScheduler:
+    """Start watch-mode scheduling without blocking the caller.
+
+    Registers the same one-job-per-repo structure as `run_watch`, but uses
+    `BackgroundScheduler` (runs jobs on daemon threads) instead of
+    `BlockingScheduler`, so the caller (the desktop API server's startup
+    hook) can return immediately. `run_watch` itself is unchanged and still
+    used by the CLI's `watch` command.
+    """
+    bg_scheduler = BackgroundScheduler()
+    interval_hours = interval_override or app_config.sync.interval_hours
+
+    for repo_config in app_config.repos:
+        bg_scheduler.add_job(
+            _make_job(repo_config, app_config),
+            "interval",
+            hours=interval_hours,
+            id=repo_config.name,
+            name=repo_config.name,
+        )
+
+    bg_scheduler.start()
+    return bg_scheduler
+
+
+def stop_background(bg_scheduler: BackgroundScheduler) -> None:
+    """Shut down a scheduler started by `start_background`.
+
+    Waits for any currently-running job to finish before returning.
+    """
+    bg_scheduler.shutdown(wait=True)
