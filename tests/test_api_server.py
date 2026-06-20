@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import threading
 from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
@@ -225,3 +226,102 @@ def test_sync_file_endpoint_404_for_unknown_repo(tmp_path: Path) -> None:
         client = TestClient(app)
         resp = client.post("/repos/does-not-exist/files/a.md/sync")
     assert resp.status_code == 404
+
+
+def test_sync_all_endpoint_processes_every_repo(tmp_path: Path) -> None:
+    repo_dirs = []
+    for i in range(2):
+        d = tmp_path / f"repo{i}"
+        _init_git_repo(d, {"README.md": f"# repo {i}\n"})
+        repo_dirs.append(d)
+
+    mock_translator = MagicMock()
+    mock_translator.translate_file.side_effect = _make_fake_translate_file()
+
+    with _patch_config_path(tmp_path), patch(
+        "repo_translator.sync.create_translator", return_value=mock_translator
+    ):
+        client = TestClient(app)
+        for d in repo_dirs:
+            client.post("/repos", json={"url_or_path": str(d)})
+
+        resp = client.post("/repos/sync-all")
+        assert resp.status_code == 200
+        assert resp.json() == {"repos_processed": 2, "cancelled": False}
+
+
+def test_sync_all_cancel_stops_remaining_repos(tmp_path: Path) -> None:
+    repo_dirs = []
+    for i in range(2):
+        d = tmp_path / f"repo{i}"
+        _init_git_repo(d, {"README.md": f"# repo {i}\n"})
+        repo_dirs.append(d)
+
+    call_order: list[str] = []
+    first_repo_started = threading.Event()
+    proceed = threading.Event()
+
+    def fake_sync_repo(repo_config, app_config, cache, **kwargs):
+        call_order.append(repo_config.name)
+        if repo_config.name == "repo0":
+            first_repo_started.set()
+            assert proceed.wait(timeout=5), "test deadlocked waiting for cancel"
+        return cache
+
+    with _patch_config_path(tmp_path), patch(
+        "repo_translator.api_server.sync.sync_repo", side_effect=fake_sync_repo
+    ):
+        client = TestClient(app)
+        for d in repo_dirs:
+            client.post("/repos", json={"url_or_path": str(d)})
+
+        result: dict = {}
+
+        def run_sync_all() -> None:
+            result["resp"] = client.post("/repos/sync-all")
+
+        t = threading.Thread(target=run_sync_all)
+        t.start()
+        assert first_repo_started.wait(timeout=5)
+        cancel_resp = client.post("/repos/sync-all/cancel")
+        proceed.set()
+        t.join(timeout=5)
+
+    assert cancel_resp.status_code == 200
+    assert cancel_resp.json() == {"cancelled": True}
+    assert call_order == ["repo0"]
+    assert result["resp"].json()["cancelled"] is True
+
+
+def test_sync_all_rejects_concurrent_runs(tmp_path: Path) -> None:
+    repo_dir = tmp_path / "repo0"
+    _init_git_repo(repo_dir, {"README.md": "# repo 0\n"})
+
+    started = threading.Event()
+    proceed = threading.Event()
+
+    def fake_sync_repo(repo_config, app_config, cache, **kwargs):
+        started.set()
+        assert proceed.wait(timeout=5), "test deadlocked"
+        return cache
+
+    with _patch_config_path(tmp_path), patch(
+        "repo_translator.api_server.sync.sync_repo", side_effect=fake_sync_repo
+    ):
+        client = TestClient(app)
+        client.post("/repos", json={"url_or_path": str(repo_dir)})
+
+        result: dict = {}
+
+        def run_sync_all() -> None:
+            result["resp"] = client.post("/repos/sync-all")
+
+        t = threading.Thread(target=run_sync_all)
+        t.start()
+        assert started.wait(timeout=5)
+
+        conflict_resp = client.post("/repos/sync-all")
+        proceed.set()
+        t.join(timeout=5)
+
+    assert conflict_resp.status_code == 409

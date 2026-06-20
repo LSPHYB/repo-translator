@@ -7,6 +7,7 @@ both share. See docs/superpowers/specs/2026-06-20-desktop-app-design.md.
 
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -19,6 +20,10 @@ from repo_translator.cli import _find_repo_by_name, _infer_repo_name, _is_git_re
 from repo_translator.config import AppConfig, RepoConfig, load_config, save_config
 
 app = FastAPI(title="repo-translator desktop API")
+
+_sync_all_lock = threading.Lock()
+_sync_all_running = False
+_sync_all_cancel_event = threading.Event()
 
 
 @app.get("/health")
@@ -160,3 +165,37 @@ def sync_file_endpoint(name: str, path: str) -> dict:
             status_code=500, detail=f"Failed to translate '{path}'."
         )
     return {"name": name, "path": path, "succeeded": True}
+
+
+@app.post("/repos/sync-all")
+def sync_all_endpoint() -> dict:
+    global _sync_all_running
+
+    with _sync_all_lock:
+        if _sync_all_running:
+            raise HTTPException(
+                status_code=409, detail="A sync-all run is already in progress."
+            )
+        _sync_all_running = True
+        _sync_all_cancel_event.clear()
+
+    try:
+        cfg = load_config()
+        cache = cache_manager.load(cache_manager.DEFAULT_CACHE_PATH)
+        cache = sync.sync_all(
+            cfg, cache, should_cancel=_sync_all_cancel_event.is_set
+        )
+        cache_manager.save(cache_manager.DEFAULT_CACHE_PATH, cache)
+        return {
+            "repos_processed": len(cfg.repos),
+            "cancelled": _sync_all_cancel_event.is_set(),
+        }
+    finally:
+        with _sync_all_lock:
+            _sync_all_running = False
+
+
+@app.post("/repos/sync-all/cancel")
+def cancel_sync_all() -> dict:
+    _sync_all_cancel_event.set()
+    return {"cancelled": True}
