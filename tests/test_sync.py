@@ -19,7 +19,7 @@ from repo_translator.config import (
     TranslatorConfig,
 )
 from repo_translator.git_manager import GitOperationError
-from repo_translator.sync import sync_repo
+from repo_translator.sync import sync_all, sync_repo
 
 
 # ---------------------------------------------------------------------------
@@ -842,3 +842,127 @@ def test_sync_repo_only_files_ignores_unknown_path(tmp_path: Path) -> None:
 
     assert mock_translator.translate_file.call_count == 0
     assert result_cache == {}
+
+
+# ---------------------------------------------------------------------------
+# Test: should_cancel parameter for cooperative cancellation
+# ---------------------------------------------------------------------------
+
+
+def test_sync_repo_should_cancel_stops_remaining_submissions(tmp_path: Path) -> None:
+    """should_cancel() returning True after N calls stops submitting further files,
+    but files already submitted still complete."""
+    repo_dir = tmp_path / "src-repo"
+    _init_repo_with_files(
+        repo_dir,
+        {
+            "a.md": "# A\n",
+            "b.md": "# B\n",
+            "c.md": "# C\n",
+        },
+    )
+
+    output_dir = tmp_path / "output"
+    app_config = _make_app_config(base_dir=output_dir, concurrency=1)
+    repo_config = RepoConfig(name="test-repo", path=str(repo_dir))
+
+    mock_translator = MagicMock()
+    mock_translator.translate_file.side_effect = _make_fake_translate_file()
+
+    calls = {"n": 0}
+
+    def should_cancel() -> bool:
+        calls["n"] += 1
+        # False on the 1st check (before file 1), True from the 2nd check on.
+        return calls["n"] > 1
+
+    with patch(
+        "repo_translator.sync.create_translator", return_value=mock_translator
+    ):
+        result_cache = sync_repo(
+            repo_config, app_config, {}, should_cancel=should_cancel
+        )
+
+    assert mock_translator.translate_file.call_count == 1
+    assert len(result_cache["test-repo"]) == 1
+
+
+def test_sync_repo_should_cancel_none_processes_everything(tmp_path: Path) -> None:
+    """Omitting should_cancel (the default) behaves exactly as before."""
+    repo_dir = tmp_path / "src-repo"
+    _init_repo_with_files(repo_dir, {"a.md": "# A\n", "b.md": "# B\n"})
+
+    output_dir = tmp_path / "output"
+    app_config = _make_app_config(base_dir=output_dir)
+    repo_config = RepoConfig(name="test-repo", path=str(repo_dir))
+
+    mock_translator = MagicMock()
+    mock_translator.translate_file.side_effect = _make_fake_translate_file()
+
+    with patch(
+        "repo_translator.sync.create_translator", return_value=mock_translator
+    ):
+        result_cache = sync_repo(repo_config, app_config, {})
+
+    assert mock_translator.translate_file.call_count == 2
+    assert len(result_cache["test-repo"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# Test: sync_all processes every repo sequentially
+# ---------------------------------------------------------------------------
+
+
+def test_sync_all_processes_every_repo(tmp_path: Path) -> None:
+    repo_dirs = []
+    for i in range(2):
+        d = tmp_path / f"repo{i}"
+        _init_repo_with_files(d, {"README.md": f"# repo {i}\n"})
+        repo_dirs.append(d)
+
+    output_dir = tmp_path / "output"
+    app_config = _make_app_config(base_dir=output_dir)
+    app_config.repos = [
+        RepoConfig(name=f"repo{i}", path=str(repo_dirs[i])) for i in range(2)
+    ]
+
+    mock_translator = MagicMock()
+    mock_translator.translate_file.side_effect = _make_fake_translate_file()
+
+    with patch(
+        "repo_translator.sync.create_translator", return_value=mock_translator
+    ):
+        result_cache = sync_all(app_config, {})
+
+    assert set(result_cache) == {"repo0", "repo1"}
+
+
+def test_sync_all_should_cancel_stops_before_next_repo(tmp_path: Path) -> None:
+    repo_dirs = []
+    for i in range(2):
+        d = tmp_path / f"repo{i}"
+        _init_repo_with_files(d, {"README.md": f"# repo {i}\n"})
+        repo_dirs.append(d)
+
+    output_dir = tmp_path / "output"
+    app_config = _make_app_config(base_dir=output_dir)
+    app_config.repos = [
+        RepoConfig(name=f"repo{i}", path=str(repo_dirs[i])) for i in range(2)
+    ]
+
+    mock_translator = MagicMock()
+    mock_translator.translate_file.side_effect = _make_fake_translate_file()
+
+    calls = {"n": 0}
+
+    def should_cancel() -> bool:
+        calls["n"] += 1
+        # Allow calls 1-2 (repo0's pre-check + its file), cancel on call 3 (repo1's pre-check)
+        return calls["n"] > 2
+
+    with patch(
+        "repo_translator.sync.create_translator", return_value=mock_translator
+    ):
+        result_cache = sync_all(app_config, {}, should_cancel=should_cancel)
+
+    assert set(result_cache) == {"repo0"}

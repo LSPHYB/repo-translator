@@ -12,6 +12,7 @@ responsible for calling `cache_manager.save()` when appropriate.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
@@ -47,6 +48,7 @@ def sync_repo(
     cache: dict,
     *,
     only_files: list[str] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> dict:
     """Run one full sync cycle for ``repo_config``.
 
@@ -134,7 +136,16 @@ def sync_repo(
 
     with ThreadPoolExecutor(max_workers=concurrency) as executor:
         future_to_path = {}
-        for file_path in changed_files:
+        for i, file_path in enumerate(changed_files):
+            if should_cancel is not None and should_cancel():
+                logger.info(
+                    "Sync repo %r: cancelled, %d file(s) already submitted, "
+                    "%d file(s) not started",
+                    repo_config.name,
+                    len(future_to_path),
+                    len(changed_files) - i,
+                )
+                break
             future = executor.submit(
                 _process_one_file,
                 file_path=file_path,
@@ -195,6 +206,29 @@ def sync_repo(
         succeeded,
     )
 
+    return cache
+
+
+def sync_all(
+    app_config: AppConfig,
+    cache: dict,
+    should_cancel: Callable[[], bool] | None = None,
+) -> dict:
+    """Sync every repo in ``app_config.repos`` sequentially.
+
+    Checks ``should_cancel()`` before starting *each repo* (in addition to
+    ``sync_repo``'s own per-file check) so a batch run can be stopped between
+    repos, not just between files within one repo.
+    """
+    for repo_config in app_config.repos:
+        if should_cancel is not None and should_cancel():
+            logger.info(
+                "sync_all: cancelled before repo %r", repo_config.name
+            )
+            break
+        cache = sync_repo(
+            repo_config, app_config, cache, should_cancel=should_cancel
+        )
     return cache
 
 
