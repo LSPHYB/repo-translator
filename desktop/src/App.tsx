@@ -11,6 +11,7 @@
  */
 import { useEffect, useState } from 'react';
 import AppShell, { type PageId } from './components/AppShell';
+import DashboardScreen from './screens/DashboardScreen';
 import PlaceholderScreen from './screens/PlaceholderScreen';
 import ConsoleDrawerPlaceholder from './screens/ConsoleDrawerPlaceholder';
 
@@ -35,7 +36,7 @@ function App() {
   }, [theme]);
 
   const screens: Record<PageId, React.ReactNode> = {
-    dashboard: <PlaceholderScreen title={SCREEN_TITLES.dashboard} />,
+    dashboard: <DashboardScreen />,
     repos: <PlaceholderScreen title={SCREEN_TITLES.repos} />,
     glossary: <PlaceholderScreen title={SCREEN_TITLES.glossary} />,
     usage: <PlaceholderScreen title={SCREEN_TITLES.usage} />,
