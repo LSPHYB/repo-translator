@@ -3,6 +3,8 @@ desktop GUI (Tauri app). This module wraps existing functions in `config`,
 `cache_manager`, `git_manager`, `sync`, and `scheduler` without changing
 their behavior -- `cli.py` remains a separate, unmodified entry point that
 both share. See docs/superpowers/specs/2026-06-20-desktop-app-design.md.
+
+Run with: `uvicorn repo_translator.api_server:app --port 8000`
 """
 
 from __future__ import annotations
@@ -177,7 +179,11 @@ def add_repo(payload: AddRepoRequest) -> dict:
             cfg.repos.append(repo_config)
             save_config(cfg)
             raise HTTPException(
-                status_code=502, detail=f"Clone failed: {exc}"
+                status_code=502,
+                detail=(
+                    f"Clone failed: {exc}. The repository '{repo_name}' was "
+                    f"still added to the tracked list; retry with a sync call."
+                ),
             ) from exc
     else:
         local_path = Path(payload.url_or_path).expanduser().resolve()
