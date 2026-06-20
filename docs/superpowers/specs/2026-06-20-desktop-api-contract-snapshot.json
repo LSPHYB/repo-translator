@@ -8,6 +8,7 @@
     "/health": {
       "get": {
         "summary": "Health",
+        "description": "Liveness check: \"is the process alive and able to answer requests at\nall\". `config_loaded`/`cache_loaded` are cheap, synchronous checks that\nTask 11's Tauri startup gate needs to know the backend can actually do\nwork (not just that the HTTP server is up) -- see the design note in\ndocs/superpowers/plans/2026-06-20-desktop-frontend.md Task 1: this stays\nliveness-flavored on purpose; deeper readiness checks (translator API key\nvalidity, network reachability) belong in a future `/ready` endpoint, not\nmore fields bolted onto `/health`.\n\nBoth checks swallow their own exceptions -- a corrupt config.yaml or\ncache.json must never turn a liveness probe into a 500.",
         "operationId": "health_health_get",
         "responses": {
           "200": {
@@ -391,8 +392,37 @@
       }
     }
   },
+  "x-health-response-shape": {
+    "_comment": "Hand-documented because /health (like /config, /repos, etc.) returns a plain dict, so FastAPI/OpenAPI only ever generates a generic additionalProperties:true object schema for it -- the actual field names below are NOT visible in the paths['/health'] entry above. This section exists because Task 1 of docs/superpowers/plans/2026-06-20-desktop-frontend.md enriched /health beyond {\"status\": \"ok\"} and the field names matter for desktop/src/api.ts's typed health() return type. Read directly from repo_translator/api_server.py's health() function (captured 2026-06-20) and confirmed by live curl against a running instance, not guessed.",
+    "route": "GET /health",
+    "example_response": {
+      "status": "ok",
+      "config_loaded": true,
+      "cache_loaded": true,
+      "version": "0.1.0"
+    },
+    "fields": {
+      "status": {
+        "type": "string",
+        "notes": "Always \"ok\" -- this route only returns 200; there is no failure status value."
+      },
+      "config_loaded": {
+        "type": "boolean",
+        "notes": "True iff repo_translator.config.load_config() did not raise. Exceptions (e.g. a corrupt config.yaml) are caught internally and reported as false; they never bubble into a 500."
+      },
+      "cache_loaded": {
+        "type": "boolean",
+        "notes": "True iff repo_translator.cache_manager.load(cache_manager.DEFAULT_CACHE_PATH) did not raise. Same exception-swallowing behavior as config_loaded."
+      },
+      "version": {
+        "type": "string",
+        "notes": "importlib.metadata.version(\"repo-translator\"), i.e. the installed package version from pyproject.toml's [project] version field (currently \"0.1.0\"). Falls back to the literal string \"unknown\" if package metadata cannot be found (e.g. running from an unusual environment where the package was never pip/uv-installed)."
+      }
+    },
+    "source_reference": "repo_translator/api_server.py, health() function (as of commit at time of this snapshot). Verify against current source if this file appears stale."
+  },
   "x-ws-logs-contract": {
-    "_comment": "Hand-documented because OpenAPI/Swagger has no schema coverage for WebSocket payloads. This route (WS /logs) is absent from the 'paths' object above for that reason -- FastAPI's openapi.json generation does not include @app.websocket routes at all. The shape below was read directly from repo_translator/api_server.py's _LogBroadcastHandler.emit method (captured 2026-06-20), not inferred or guessed.",
+    "_comment": "Hand-documented because OpenAPI/Swagger has no schema coverage for WebSocket payloads. This route (WS /logs) is absent from the 'paths' object above for that reason -- FastAPI's openapi.json generation does not include @app.websocket routes at all. The shape below was read directly from repo_translator/api_server.py's _LogBroadcastHandler.emit method (captured 2026-06-20, re-verified unchanged on re-capture triggered by /health schema change), not inferred or guessed.",
     "route": "WS /logs",
     "direction": "server -> client only (the handler never reads incoming client messages for data; the server's logs_ws coroutine does call websocket.receive_text() in a loop, but purely to detect WebSocketDisconnect -- it ignores whatever text the client sends)",
     "message_format": "One NDJSON (newline-delimited JSON) line per log record, sent as a WebSocket text frame via websocket.send_text(). Every logging.LogRecord emitted by the 'repo_translator' logger (and its children) while a client is connected is broadcast to every currently-connected client.",
