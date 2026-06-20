@@ -1,0 +1,425 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "repo-translator desktop API",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "Health",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Health Health Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/config": {
+      "get": {
+        "summary": "Get Config",
+        "operationId": "get_config_config_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Get Config Config Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "Put Config",
+        "operationId": "put_config_config_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Payload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Put Config Config Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/repos": {
+      "get": {
+        "summary": "List Repos",
+        "operationId": "list_repos_repos_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "type": "array",
+                  "title": "Response List Repos Repos Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Add Repo",
+        "operationId": "add_repo_repos_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddRepoRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Add Repo Repos Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/repos/{name}": {
+      "delete": {
+        "summary": "Delete Repo",
+        "operationId": "delete_repo_repos__name__delete",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/repos/{name}/sync": {
+      "post": {
+        "summary": "Sync Repo Endpoint",
+        "operationId": "sync_repo_endpoint_repos__name__sync_post",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Sync Repo Endpoint Repos  Name  Sync Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/repos/{name}/files/{path}/sync": {
+      "post": {
+        "summary": "Sync File Endpoint",
+        "operationId": "sync_file_endpoint_repos__name__files__path__sync_post",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          },
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Sync File Endpoint Repos  Name  Files  Path  Sync Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/repos/sync-all": {
+      "post": {
+        "summary": "Sync All Endpoint",
+        "operationId": "sync_all_endpoint_repos_sync_all_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Sync All Endpoint Repos Sync All Post"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/repos/sync-all/cancel": {
+      "post": {
+        "summary": "Cancel Sync All",
+        "operationId": "cancel_sync_all_repos_sync_all_cancel_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Cancel Sync All Repos Sync All Cancel Post"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AddRepoRequest": {
+        "properties": {
+          "url_or_path": {
+            "type": "string",
+            "title": "Url Or Path"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "url_or_path"
+        ],
+        "title": "AddRepoRequest"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  },
+  "x-ws-logs-contract": {
+    "_comment": "Hand-documented because OpenAPI/Swagger has no schema coverage for WebSocket payloads. This route (WS /logs) is absent from the 'paths' object above for that reason -- FastAPI's openapi.json generation does not include @app.websocket routes at all. The shape below was read directly from repo_translator/api_server.py's _LogBroadcastHandler.emit method (captured 2026-06-20), not inferred or guessed.",
+    "route": "WS /logs",
+    "direction": "server -> client only (the handler never reads incoming client messages for data; the server's logs_ws coroutine does call websocket.receive_text() in a loop, but purely to detect WebSocketDisconnect -- it ignores whatever text the client sends)",
+    "message_format": "One NDJSON (newline-delimited JSON) line per log record, sent as a WebSocket text frame via websocket.send_text(). Every logging.LogRecord emitted by the 'repo_translator' logger (and its children) while a client is connected is broadcast to every currently-connected client.",
+    "fields": {
+      "time": {
+        "type": "string",
+        "format": "ISO 8601 datetime, UTC, from datetime.now(timezone.utc).isoformat()",
+        "example": "2026-06-20T14:32:01.123456+00:00"
+      },
+      "level": {
+        "type": "string",
+        "source": "record.levelname",
+        "example": "INFO",
+        "notes": "Standard Python logging level names: DEBUG, INFO, WARNING, ERROR, CRITICAL."
+      },
+      "logger": {
+        "type": "string",
+        "source": "record.name",
+        "example": "repo_translator.sync"
+      },
+      "message": {
+        "type": "string",
+        "source": "record.getMessage()",
+        "notes": "Already-formatted message (with %-style args substituted in); does not include exception tracebacks separately -- record.getMessage() only returns the log message text."
+      }
+    },
+    "example_line": "{\"time\": \"2026-06-20T14:32:01.123456+00:00\", \"level\": \"INFO\", \"logger\": \"repo_translator.sync\", \"message\": \"Synced 3 files for repo 'example-repo'\"}",
+    "source_reference": "repo_translator/api_server.py, class _LogBroadcastHandler, method emit (as of commit at time of this snapshot). Verify against current source if this file appears stale -- see Step 3 staleness note in docs/superpowers/plans/2026-06-20-desktop-frontend.md Task 0.5."
+  }
+}
