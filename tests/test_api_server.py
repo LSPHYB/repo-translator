@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import re
 import subprocess
 import threading
@@ -356,3 +358,19 @@ def test_lifespan_starts_and_stops_background_scheduler(tmp_path: Path) -> None:
             assert api_server._background_scheduler.running is True
 
     assert api_server._background_scheduler is None
+
+
+def test_logs_ws_receives_log_messages(tmp_path: Path) -> None:
+    with _patch_config_path(tmp_path):
+        save_config(AppConfig(repos=[]), tmp_path / ".repo-translator" / "config.yaml")
+        with TestClient(app) as client:
+            with client.websocket_connect("/logs") as ws:
+                logging.getLogger("repo_translator.sync").warning(
+                    "test message %s", "abc"
+                )
+                received = ws.receive_text()
+
+    payload = json.loads(received)
+    assert payload["level"] == "WARNING"
+    assert payload["logger"] == "repo_translator.sync"
+    assert payload["message"] == "test message abc"

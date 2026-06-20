@@ -7,6 +7,10 @@ both share. See docs/superpowers/specs/2026-06-20-desktop-app-design.md.
 
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
+import queue
 import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -14,7 +18,7 @@ from pathlib import Path
 
 import click
 from apscheduler.schedulers.background import BackgroundScheduler
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 from repo_translator import cache_manager, git_manager, sync
@@ -28,6 +32,11 @@ _background_scheduler: BackgroundScheduler | None = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _background_scheduler
+
+    log_handler = _LogBroadcastHandler()
+    logging.getLogger("repo_translator").addHandler(log_handler)
+    drain_task = asyncio.create_task(_drain_log_queue())
+
     cfg = load_config()
     _background_scheduler = scheduler_module.start_background(cfg)
     yield
@@ -35,12 +44,63 @@ async def lifespan(app: FastAPI):
         scheduler_module.stop_background(_background_scheduler)
         _background_scheduler = None
 
+    drain_task.cancel()
+    logging.getLogger("repo_translator").removeHandler(log_handler)
+
 
 app = FastAPI(title="repo-translator desktop API", lifespan=lifespan)
 
 _sync_all_lock = threading.Lock()
 _sync_all_running = False
 _sync_all_cancel_event = threading.Event()
+
+_log_queue: queue.Queue[str] = queue.Queue()
+_connected_websockets: set[WebSocket] = set()
+
+
+class _LogBroadcastHandler(logging.Handler):
+    """Formats log records as one NDJSON line and pushes them onto a
+    thread-safe queue. Safe to call from any thread (sync.py's
+    ThreadPoolExecutor workers, scheduler.py's BackgroundScheduler threads)
+    because `queue.Queue.put_nowait` is itself thread-safe; the actual
+    WebSocket broadcast happens separately in `_drain_log_queue`, which runs
+    on the asyncio event loop -- the only context allowed to touch
+    `WebSocket` objects.
+    """
+
+    def emit(self, record: logging.LogRecord) -> None:
+        payload = json.dumps(
+            {
+                "time": datetime.now(timezone.utc).isoformat(),
+                "level": record.levelname,
+                "logger": record.name,
+                "message": record.getMessage(),
+            }
+        )
+        _log_queue.put_nowait(payload)
+
+
+async def _drain_log_queue() -> None:
+    """Forward every queued log line to all currently-connected WebSockets.
+
+    Uses a short-timeout poll (rather than a single blocking
+    `queue.Queue.get()` handed to the default executor) so that cancelling
+    this task on lifespan shutdown actually takes effect promptly -- a bare
+    blocking `get()` running in the executor is not interruptible by
+    `Task.cancel()` and would otherwise hang the event loop's executor
+    shutdown forever waiting for that worker thread to finish.
+    """
+    loop = asyncio.get_event_loop()
+    while True:
+        try:
+            payload = await loop.run_in_executor(None, _log_queue.get, True, 0.1)
+        except queue.Empty:
+            continue
+        for ws in list(_connected_websockets):
+            try:
+                await ws.send_text(payload)
+            except Exception:
+                _connected_websockets.discard(ws)
 
 
 @app.get("/health")
@@ -216,3 +276,16 @@ def sync_all_endpoint() -> dict:
 def cancel_sync_all() -> dict:
     _sync_all_cancel_event.set()
     return {"cancelled": True}
+
+
+@app.websocket("/logs")
+async def logs_ws(websocket: WebSocket) -> None:
+    await websocket.accept()
+    _connected_websockets.add(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        _connected_websockets.discard(websocket)
