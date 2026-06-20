@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 from fastapi.testclient import TestClient
 
 from repo_translator.api_server import app
-from repo_translator.config import AppConfig, save_config
+from repo_translator.config import AppConfig, OutputConfig, save_config
 
 
 def test_health_returns_ok() -> None:
@@ -25,11 +25,29 @@ def test_health_returns_ok() -> None:
 
 @contextmanager
 def _patch_config_path(tmp_path: Path):
+    """Patch config/cache paths AND pre-seed config.yaml with a tmp_path
+    output.base_dir.
+
+    Patching DEFAULT_CONFIG_PATH/DEFAULT_CACHE_PATH alone is not enough: any
+    test that goes on to call an endpoint backed by `sync.sync_repo` (e.g.
+    POST /repos/{name}/sync) writes translated output files to wherever
+    `AppConfig.output.base_dir` points. A freshly loaded `AppConfig()` (no
+    config.yaml yet) defaults `output.base_dir` to `~/.repo-translator/output`
+    -- a REAL path on this machine -- so without this pre-seed, every such
+    test would write real files there. Writing an initial config.yaml here,
+    with output.base_dir already redirected under tmp_path, means every
+    later `load_config()` call in the test (including the one inside
+    `add_repo`, which loads-appends-saves) preserves this safe value.
+    """
     config_path = tmp_path / ".repo-translator" / "config.yaml"
     cache_path = tmp_path / ".repo-translator" / "cache.json"
     with patch("repo_translator.config.DEFAULT_CONFIG_PATH", config_path), patch(
         "repo_translator.cache_manager.DEFAULT_CACHE_PATH", cache_path
     ):
+        save_config(
+            AppConfig(output=OutputConfig(base_dir=str(tmp_path / "output"))),
+            config_path,
+        )
         yield config_path
 
 
