@@ -777,6 +777,10 @@ def test_sync_managed_repo_end_to_end(tmp_path: Path) -> None:
 
     assert mock_translator2.translate_file.call_count == 1
 
+    # Cache should now have 3 entries
+    assert len(cache2["managed-repo"]) == 3
+    assert "NEWS.md" in cache2["managed-repo"]
+
 
 # ---------------------------------------------------------------------------
 # Test: only_files parameter restricts processing to requested files
