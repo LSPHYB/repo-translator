@@ -16,7 +16,13 @@ from fastapi.testclient import TestClient
 
 from repo_translator import api_server, cache_manager
 from repo_translator.api_server import app
-from repo_translator.config import AppConfig, OutputConfig, save_config
+from repo_translator.config import (
+    AppConfig,
+    OutputConfig,
+    TranslatorConfig,
+    load_config,
+    save_config,
+)
 
 
 def test_health_returns_ok() -> None:
@@ -181,6 +187,86 @@ def test_put_config_stale_revision_returns_409_and_does_not_write(
         assert after == before
         assert after["sync"]["interval_hours"] == 12
         assert after["revision"] == start_revision + 1
+
+
+def test_get_config_never_exposes_raw_api_key(tmp_path: Path) -> None:
+    with _patch_config_path(tmp_path) as config_path:
+        cfg = load_config(config_path)
+        cfg.translator = TranslatorConfig(engine="deepseek", api_key="super-secret")
+        save_config(cfg, config_path)
+
+        client = TestClient(app)
+        resp = client.get("/config")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["translator"]["api_key_set"] is True
+    assert "api_key" not in body["translator"]
+
+
+def test_put_config_omitted_api_key_preserves_stored_key(tmp_path: Path) -> None:
+    with _patch_config_path(tmp_path) as config_path:
+        cfg = load_config(config_path)
+        cfg.translator = TranslatorConfig(engine="deepseek", api_key="super-secret")
+        save_config(cfg, config_path)
+
+        client = TestClient(app)
+        current = client.get("/config").json()
+        assert current["translator"]["api_key_set"] is True
+
+        # Round-trip what the frontend would actually send: `api_key_set`
+        # carried back as-is (silently dropped by Pydantic's extra='ignore'
+        # default), `api_key` omitted entirely, some other field changed.
+        payload = dict(current)
+        assert "api_key" not in payload["translator"]
+        payload["sync"] = {**current["sync"], "concurrency": 7}
+
+        resp = client.put("/config", json=payload)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["translator"]["api_key_set"] is True
+        assert "api_key" not in body["translator"]
+
+        on_disk = load_config(config_path)
+        assert on_disk.translator.api_key == "super-secret"
+
+
+def test_put_config_empty_string_api_key_clears_stored_key(tmp_path: Path) -> None:
+    with _patch_config_path(tmp_path) as config_path:
+        cfg = load_config(config_path)
+        cfg.translator = TranslatorConfig(engine="deepseek", api_key="super-secret")
+        save_config(cfg, config_path)
+
+        client = TestClient(app)
+        current = client.get("/config").json()
+
+        payload = dict(current)
+        payload["translator"] = {**current["translator"], "api_key": ""}
+
+        resp = client.put("/config", json=payload)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["translator"]["api_key_set"] is False
+
+        on_disk = load_config(config_path)
+        assert on_disk.translator.api_key is None
+
+
+def test_put_config_new_api_key_sets_stored_key(tmp_path: Path) -> None:
+    with _patch_config_path(tmp_path) as config_path:
+        client = TestClient(app)
+        current = client.get("/config").json()
+
+        payload = dict(current)
+        payload["translator"] = {**current["translator"], "api_key": "new-real-key"}
+
+        resp = client.put("/config", json=payload)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["translator"]["api_key_set"] is True
+
+        on_disk = load_config(config_path)
+        assert on_disk.translator.api_key == "new-real-key"
 
 
 def _init_git_repo(repo_dir: Path, files: dict[str, str]) -> None:

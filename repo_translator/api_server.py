@@ -187,18 +187,57 @@ def health() -> dict:
     }
 
 
+def _serialize_config(cfg: AppConfig) -> dict:
+    """Serialize an ``AppConfig`` for an API response, never including the
+    literal translator API key. The literal value is replaced with a
+    boolean ``api_key_set`` -- see the module-level note above `get_config`/
+    `put_config` for why this matters (don't rely on frontend discipline to
+    avoid leaking a secret into DevTools/crash reports/error boundaries;
+    close it at the source instead).
+    """
+    data = cfg.model_dump(mode="json", exclude_none=True)
+    translator = data.get("translator", {})
+    translator.pop("api_key", None)
+    translator["api_key_set"] = bool(cfg.translator.api_key)
+    data["translator"] = translator
+    return data
+
+
 @app.get("/config")
 def get_config() -> dict:
-    cfg = load_config()
-    return cfg.model_dump(mode="json", exclude_none=True)
+    return _serialize_config(load_config())
 
 
 @app.put("/config")
 def put_config(payload: dict) -> dict:
+    # Loaded once, up front: serves both the API-key-preservation resolution
+    # immediately below and the revision comparison further down. Do not
+    # call load_config() again in this handler.
+    current = load_config()
+
+    # Resolve what `payload["translator"]["api_key"]` should actually mean
+    # before validating, since the API never returns the literal key value
+    # (see _serialize_config) -- the frontend has no way to "send back what
+    # it got" for this one field the way it does for every other setting.
+    # Three cases, matching what SettingsScreen sends in each UI state:
+    #   - key absent/None  -> preserve the existing stored key (the user
+    #     didn't touch the field; this is how every *other* setting saves
+    #     without forcing a re-paste of the key).
+    #   - key == ""        -> explicit clear; normalized to None below.
+    #   - key == non-empty -> sets/replaces the stored key.
+    incoming_translator = dict(payload.get("translator") or {})
+    if incoming_translator.get("api_key") is None:
+        incoming_translator["api_key"] = current.translator.api_key
+    payload = {**payload, "translator": incoming_translator}
+
     try:
         new_config = AppConfig.model_validate(payload)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # Empty-string and "no key" must persist as the same None state.
+    if new_config.translator.api_key == "":
+        new_config.translator.api_key = None
 
     # Optimistic-concurrency check: the client must have last read the
     # config at the server's current revision. A mismatch means some other
@@ -206,7 +245,6 @@ def put_config(payload: dict) -> dict:
     # -- reject rather than silently overwriting those edits. See the scope
     # note on `AppConfig.revision` in config.py for what this guard does and
     # does not protect against.
-    current = load_config()
     if new_config.revision != current.revision:
         raise HTTPException(
             status_code=409,
@@ -214,7 +252,7 @@ def put_config(payload: dict) -> dict:
         )
 
     save_config(new_config)
-    return new_config.model_dump(mode="json", exclude_none=True)
+    return _serialize_config(new_config)
 
 
 @app.get("/repos")
