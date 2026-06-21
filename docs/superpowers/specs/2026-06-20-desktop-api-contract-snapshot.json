@@ -466,6 +466,36 @@
     },
     "source_reference": "repo_translator/api_server.py, health() function (as of commit at time of this snapshot). Verify against current source if this file appears stale."
   },
+  "x-config-response-shape": {
+    "_comment": "Hand-documented because /config (like /health, /repos, etc.) returns a plain dict, so FastAPI/OpenAPI only ever generates a generic additionalProperties:true object schema for it -- the field names below are NOT visible in paths['/config'] above. This section exists because Task 6 of docs/superpowers/plans/2026-06-20-desktop-frontend.md added an optimistic-concurrency `revision` field to AppConfig. Read directly from repo_translator/config.py's AppConfig model and repo_translator/api_server.py's get_config()/put_config() functions (captured at Task 6 time) and confirmed by live curl against a scratch-REPO_TRANSLATOR_HOME instance, not guessed.",
+    "route": "GET /config, PUT /config",
+    "example_response": {
+      "translator": {
+        "engine": "deepseek",
+        "max_tokens": 4096,
+        "temperature": 0.3
+      },
+      "sync": {
+        "interval_hours": 6,
+        "concurrency": 3
+      },
+      "output": {
+        "base_dir": "~/.repo-translator/output",
+        "suffix": "_zh",
+        "exclude": []
+      },
+      "repos": [],
+      "glossary": [],
+      "revision": 0
+    },
+    "new_field": {
+      "revision": {
+        "type": "integer",
+        "notes": "Optimistic-concurrency token. GET /config returns the server's current revision. PUT /config's request body must include the `revision` the client last read; save_config() increments it by 1 on every write (including the very first save of a fresh default config, so revision goes 0 -> 1 on that write). If the PUT payload's revision does not match the server's current revision at request time, the server returns 409 with body {\"detail\": \"\\u914d\\u7f6e\\u5df2\\u66f4\\u65b0\\uff0c\\u8bf7\\u91cd\\u65b0\\u52a0\\u8f7d\\u540e\\u91cd\\u8bd5\"} and does NOT write -- the client must re-GET and redo its edit rather than retry with the stale payload. Scope limit: this is a single-process load->compare->write check, not a cross-process compare-and-swap (see the docstring next to AppConfig.revision in config.py); it protects two screens racing within one running desktop app, not the CLI watch daemon and the desktop sidecar writing the same config.yaml concurrently."
+      }
+    },
+    "source_reference": "repo_translator/config.py (AppConfig.revision, save_config()) and repo_translator/api_server.py (get_config(), put_config()), as of Task 6 of docs/superpowers/plans/2026-06-20-desktop-frontend.md. Verify against current source if this file appears stale."
+  },
   "x-ws-logs-contract": {
     "_comment": "Hand-documented because OpenAPI/Swagger has no schema coverage for WebSocket payloads. This route (WS /logs) is absent from the 'paths' object above for that reason -- FastAPI's openapi.json generation does not include @app.websocket routes at all. The shape below was read directly from repo_translator/api_server.py's _LogBroadcastHandler.emit method (captured 2026-06-20, re-verified unchanged on re-capture triggered by /health schema change; re-verified again 2026-06-21 when the GET /repos/{name}/files endpoint was added and the event/path/error optional fields below were introduced), not inferred or guessed.",
     "route": "WS /logs",
