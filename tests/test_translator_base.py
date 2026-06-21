@@ -14,8 +14,15 @@ from repo_translator.translator.base import (
     BaseTranslator,
     RateLimitError,
     SYSTEM_PROMPT,
+    TokenUsage,
     TranslationError,
 )
+
+# Fixed per-call usage returned by the fakes below: the exact numbers are
+# arbitrary (no test asserts on a specific count beyond accumulation
+# behavior), but must be nonzero/distinguishable to make accumulation
+# assertions meaningful.
+_FAKE_USAGE = TokenUsage(prompt_tokens=10, completion_tokens=5)
 
 
 class FakeTranslator(BaseTranslator):
@@ -30,11 +37,11 @@ class FakeTranslator(BaseTranslator):
         self.responses: list[str] = list(responses) if responses else []
         self.calls: list[str] = []
 
-    def translate_raw(self, prompt: str) -> str:
+    def translate_raw(self, prompt: str) -> tuple[str, TokenUsage]:
         self.calls.append(prompt)
         if self.responses:
-            return self.responses.pop(0)
-        return ""
+            return self.responses.pop(0), _FAKE_USAGE
+        return "", _FAKE_USAGE
 
 
 class RaisingTranslator(BaseTranslator):
@@ -43,7 +50,7 @@ class RaisingTranslator(BaseTranslator):
     def __init__(self) -> None:
         self.calls = 0
 
-    def translate_raw(self, prompt: str) -> str:
+    def translate_raw(self, prompt: str) -> tuple[str, TokenUsage]:
         self.calls += 1
         raise RateLimitError("rate limited")
 
@@ -57,28 +64,30 @@ def test_translate_file_happy_path_returns_translated_markers() -> None:
     marked_source = "⟦0⟧Hello⟦/0⟧ world ⟦1⟧Goodbye⟦/1⟧"
     translator = FakeTranslator(responses=["⟦0⟧你好⟦/0⟧ world ⟦1⟧再见⟦/1⟧"])
 
-    result = translator.translate_file(marked_source, glossary=[])
+    result, usage = translator.translate_file(marked_source, glossary=[])
 
     assert result == "⟦0⟧你好⟦/0⟧⟦1⟧再见⟦/1⟧"
     # Only the single full-file call was made; no fallback needed.
     assert len(translator.calls) == 1
+    assert usage == _FAKE_USAGE
 
 
 def test_translate_file_with_no_markers_returns_source_unchanged() -> None:
     marked_source = "plain text with no markers at all"
     translator = FakeTranslator(responses=["should not be used"])
 
-    result = translator.translate_file(marked_source, glossary=[])
+    result, usage = translator.translate_file(marked_source, glossary=[])
 
     assert result == marked_source
     assert translator.calls == []  # translate_raw never invoked
+    assert usage == TokenUsage(0, 0)
 
 
 def test_translate_file_preserves_marker_ordering() -> None:
     marked_source = "⟦0⟧A⟦/0⟧ x ⟦1⟧B⟦/1⟧ y ⟦2⟧C⟦/2⟧"
     translator = FakeTranslator(responses=["⟦2⟧C2⟦/2⟧ ⟦0⟧A2⟦/0⟧ ⟦1⟧B2⟦/1⟧"])
 
-    result = translator.translate_file(marked_source, glossary=[])
+    result, _usage = translator.translate_file(marked_source, glossary=[])
 
     # Output order follows the *input* marker id order (0, 1, 2), not the
     # order they happened to appear in the LLM response.
@@ -98,7 +107,7 @@ def test_translate_file_missing_marker_triggers_single_fallback_call() -> None:
     fallback_response = "⟦1⟧再见⟦/1⟧"
     translator = FakeTranslator(responses=[first_response, fallback_response])
 
-    result = translator.translate_file(marked_source, glossary=[])
+    result, usage = translator.translate_file(marked_source, glossary=[])
 
     assert result == "⟦0⟧你好⟦/0⟧⟦1⟧再见⟦/1⟧"
     # Exactly one extra call (the fallback) beyond the initial full-file call.
@@ -108,6 +117,10 @@ def test_translate_file_missing_marker_triggers_single_fallback_call() -> None:
     fallback_prompt = translator.calls[1]
     assert "⟦1⟧Goodbye⟦/1⟧" in fallback_prompt
     assert "Hello" not in fallback_prompt
+    # Usage accumulates across the full-file call + the fallback call.
+    assert usage == TokenUsage(
+        _FAKE_USAGE.prompt_tokens * 2, _FAKE_USAGE.completion_tokens * 2
+    )
 
 
 def test_translate_file_only_failed_id_is_retried_others_untouched() -> None:
@@ -117,7 +130,7 @@ def test_translate_file_only_failed_id_is_retried_others_untouched() -> None:
     fallback_response = "⟦1⟧B2⟦/1⟧"
     translator = FakeTranslator(responses=[first_response, fallback_response])
 
-    result = translator.translate_file(marked_source, glossary=[])
+    result, _usage = translator.translate_file(marked_source, glossary=[])
 
     assert result == "⟦0⟧A2⟦/0⟧⟦1⟧B2⟦/1⟧⟦2⟧C2⟦/2⟧"
     assert len(translator.calls) == 2  # 1 full-file + 1 fallback (only for id 1)
@@ -130,7 +143,7 @@ def test_translate_file_empty_marker_content_triggers_fallback() -> None:
     fallback_response = "⟦0⟧你好⟦/0⟧"
     translator = FakeTranslator(responses=[first_response, fallback_response])
 
-    result = translator.translate_file(marked_source, glossary=[])
+    result, _usage = translator.translate_file(marked_source, glossary=[])
 
     assert result == "⟦0⟧你好⟦/0⟧"
     assert len(translator.calls) == 2
@@ -143,7 +156,7 @@ def test_translate_file_marker_symbols_translated_away_triggers_fallback() -> No
     fallback_response = "⟦0⟧你好⟦/0⟧"
     translator = FakeTranslator(responses=[first_response, fallback_response])
 
-    result = translator.translate_file(marked_source, glossary=[])
+    result, _usage = translator.translate_file(marked_source, glossary=[])
 
     assert result == "⟦0⟧你好⟦/0⟧"
     assert len(translator.calls) == 2
@@ -155,7 +168,7 @@ def test_translate_file_fallback_failure_keeps_original_content() -> None:
     fallback_response = ""  # fallback also fails to produce marker 1
     translator = FakeTranslator(responses=[first_response, fallback_response])
 
-    result = translator.translate_file(marked_source, glossary=[])
+    result, _usage = translator.translate_file(marked_source, glossary=[])
 
     # Marker 1 keeps its original (untranslated) content.
     assert result == "⟦0⟧你好⟦/0⟧⟦1⟧Goodbye⟦/1⟧"
@@ -169,11 +182,14 @@ def test_translate_file_full_call_translation_error_falls_back_per_marker(
     marked_source = "⟦0⟧Hello⟦/0⟧ ⟦1⟧Goodbye⟦/1⟧"
     translator = RaisingTranslator()
 
-    result = translator.translate_file(marked_source, glossary=[])
+    result, usage = translator.translate_file(marked_source, glossary=[])
 
     # Both markers fail entirely (full call + fallback all rate-limited) ->
     # original content preserved for both, nothing raised to the caller.
     assert result == "⟦0⟧Hello⟦/0⟧⟦1⟧Goodbye⟦/1⟧"
+    # Nothing ever succeeded -- TranslationError raised before any response,
+    # so no billed usage was ever returned.
+    assert usage == TokenUsage(0, 0)
 
 
 def test_call_with_retry_raises_translation_error_after_exhausting_retries(
@@ -195,17 +211,18 @@ def test_call_with_retry_succeeds_after_transient_rate_limit(
     calls = {"count": 0}
 
     class FlakyTranslator(BaseTranslator):
-        def translate_raw(self, prompt: str) -> str:
+        def translate_raw(self, prompt: str) -> tuple[str, TokenUsage]:
             calls["count"] += 1
             if calls["count"] < 2:
                 raise RateLimitError("rate limited")
-            return "ok"
+            return "ok", _FAKE_USAGE
 
     translator = FlakyTranslator()
-    result = translator._call_with_retry(lambda: translator.translate_raw("prompt"))
+    result, usage = translator._call_with_retry(lambda: translator.translate_raw("prompt"))
 
     assert result == "ok"
     assert calls["count"] == 2
+    assert usage == _FAKE_USAGE
 
 
 # ---------------------------------------------------------------------------
@@ -282,7 +299,7 @@ class TimeoutRaisingTranslator(BaseTranslator):
     def __init__(self) -> None:
         self.calls: list[str] = []
 
-    def translate_raw(self, prompt: str) -> str:
+    def translate_raw(self, prompt: str) -> tuple[str, TokenUsage]:
         self.calls.append(prompt)
         raise TimeoutError("request timed out")
 
@@ -296,7 +313,7 @@ def test_translate_file_timeout_error_triggers_fallback_not_crash(
     marked_source = "⟦0⟧Hello⟦/0⟧ ⟦1⟧World⟦/1⟧"
     translator = TimeoutRaisingTranslator()
 
-    result = translator.translate_file(marked_source, glossary=[])
+    result, _usage = translator.translate_file(marked_source, glossary=[])
 
     # Both markers fall back — fallback also times out — so original content
     # is preserved for both.  The key assertion is that no exception escapes.
@@ -318,15 +335,15 @@ def test_translate_file_unexpected_error_during_full_call_falls_back(
             self.calls: list[str] = []
             self._first = True
 
-        def translate_raw(self, prompt: str) -> str:
+        def translate_raw(self, prompt: str) -> tuple[str, TokenUsage]:
             self.calls.append(prompt)
             if self._first:
                 self._first = False
                 raise TimeoutError("timeout on full-file call")
-            return "⟦0⟧你好⟦/0⟧"
+            return "⟦0⟧你好⟦/0⟧", _FAKE_USAGE
 
     translator = MixedTranslator()
-    result = translator.translate_file(marked_source, glossary=[])
+    result, _usage = translator.translate_file(marked_source, glossary=[])
 
     assert result == "⟦0⟧你好⟦/0⟧"
     assert len(translator.calls) == 2  # 1 failed full-file + 1 successful fallback
@@ -371,11 +388,11 @@ def test_translate_file_malformed_marker_preserves_content(
         """Full-file call fails, fallback also fails — so original content
         is preserved.  This ensures the malformed marker's best-effort content
         makes it into the output."""
-        def translate_raw(self, prompt: str) -> str:
+        def translate_raw(self, prompt: str) -> tuple[str, TokenUsage]:
             raise RateLimitError("always rate limited")
 
     translator = FailingTranslator()
-    result = translator.translate_file(marked_source, glossary=[])
+    result, _usage = translator.translate_file(marked_source, glossary=[])
 
     # ⟦0⟧ content preserved (well-formed, normal fallback).
     # ⟦1⟧ content "World end" preserved via _extract_marker_content_fallback
@@ -399,16 +416,16 @@ def test_translate_file_malformed_marker_with_fallback_success(
         def __init__(self) -> None:
             self.calls: list[str] = []
 
-        def translate_raw(self, prompt: str) -> str:
+        def translate_raw(self, prompt: str) -> tuple[str, TokenUsage]:
             self.calls.append(prompt)
             # Full-file call: only ⟦0⟧ present, but ⟦1⟧ mangled.
             if len(self.calls) <= 1:
-                return "⟦0⟧你好⟦/0⟧ gap ⟦1⟧⟦/1⟧"  # ⟦1⟧ has empty content
+                return "⟦0⟧你好⟦/0⟧ gap ⟦1⟧⟦/1⟧", _FAKE_USAGE  # ⟦1⟧ has empty content
             # Fallback for ⟦1⟧ succeeds.
-            return "⟦1⟧再见⟦/1⟧"
+            return "⟦1⟧再见⟦/1⟧", _FAKE_USAGE
 
     translator = MixedFallbackTranslator()
-    result = translator.translate_file(marked_source, glossary=[])
+    result, _usage = translator.translate_file(marked_source, glossary=[])
 
     # Both markers should have valid translated content.
     assert "⟦0⟧你好⟦/0⟧" in result

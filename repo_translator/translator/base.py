@@ -22,10 +22,27 @@ import re
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from typing import NamedTuple
 
 from repo_translator.config import GlossaryEntry
 
 logger = logging.getLogger(__name__)
+
+
+class TokenUsage(NamedTuple):
+    """Token counts billed for a single LLM call (or an accumulation of
+    several). Provider engines (`openai_translator.py`, `claude_translator.py`)
+    extract these from the raw API response object; `translate_file`
+    accumulates them across the full-file call and any per-marker fallback
+    calls (see its docstring for the exact accumulation rule).
+
+    Deliberately holds only raw counts, never a derived cost -- cost is
+    computed at `GET /usage` read time from a separate pricing table (see
+    `usage_manager.py`) so a pricing update never requires a data migration.
+    """
+
+    prompt_tokens: int
+    completion_tokens: int
 
 
 SYSTEM_PROMPT = """\
@@ -162,17 +179,24 @@ class BaseTranslator(ABC):
     RETRY_BASE_DELAY = 1.0
 
     @abstractmethod
-    def translate_raw(self, prompt: str) -> str:
-        """Perform a single LLM call with `prompt` and return the raw text
-        response. Implementations should raise `RateLimitError` when the
-        underlying API signals rate-limiting/429, so that `_call_with_retry`
-        can retry with backoff. Any per-call timeout should be enforced by
-        the provider's own SDK client configuration (e.g. an `httpx`/SDK
-        `timeout` parameter of 30s), not by this method's caller.
+    def translate_raw(self, prompt: str) -> tuple[str, TokenUsage]:
+        """Perform a single LLM call with `prompt` and return
+        `(raw_text_response, usage)`. Implementations should raise
+        `RateLimitError` when the underlying API signals rate-limiting/429,
+        so that `_call_with_retry` can retry with backoff. Any per-call
+        timeout should be enforced by the provider's own SDK client
+        configuration (e.g. an `httpx`/SDK `timeout` parameter of 30s), not
+        by this method's caller.
+
+        `usage` must come from the provider response object itself (e.g.
+        `response.usage`), never from a mutable attribute on `self` -- one
+        translator instance is shared across worker threads in
+        `sync.py`'s `ThreadPoolExecutor`, so usage must flow purely through
+        return values to stay thread-safe.
         """
         raise NotImplementedError
 
-    def _call_with_retry(self, fn: Callable[[], str]) -> str:
+    def _call_with_retry(self, fn: Callable[[], tuple[str, TokenUsage]]) -> tuple[str, TokenUsage]:
         """Call `fn` (typically `lambda: self.translate_raw(prompt)`),
         retrying with exponential backoff on `RateLimitError` up to
         `MAX_RETRIES` attempts total. Raises `TranslationError` once
@@ -197,19 +221,32 @@ class BaseTranslator(ABC):
             f"Translation failed after {self.MAX_RETRIES} attempts due to rate limiting"
         ) from last_error
 
-    def translate_file(self, marked_source: str, glossary: list[GlossaryEntry]) -> str:
+    def translate_file(
+        self, marked_source: str, glossary: list[GlossaryEntry]
+    ) -> tuple[str, TokenUsage]:
         """Translate a fully marker-embedded Markdown source string.
 
         See module docstring for the `⟦n⟧...⟦/n⟧` marker protocol. Returns
-        a marker-embedded translated string with the same set of marker ids
-        as the input, suitable for `markdown_parser.splice`-style
-        reassembly. Marker ids that cannot be translated successfully
-        (after a per-id fallback retry) keep their *original* (untranslated)
-        content rather than blocking the rest of the file.
+        `(translated_marked_source, usage)`: a marker-embedded translated
+        string with the same set of marker ids as the input, suitable for
+        `markdown_parser.splice`-style reassembly, plus the accumulated
+        `TokenUsage` for this whole call. Marker ids that cannot be
+        translated successfully (after a per-id fallback retry) keep their
+        *original* (untranslated) content rather than blocking the rest of
+        the file.
+
+        Usage accumulation rule: starts at `TokenUsage(0, 0)`, adds the
+        full-file `_call_with_retry` attempt's usage if it didn't raise,
+        plus every per-marker `_fallback_translate_marker` call's usage --
+        a fallback call's tokens were billed by the provider regardless of
+        whether its result ultimately passed validation. All accumulation
+        happens via local variables only (never a `self` attribute), so this
+        stays correct when multiple files are translated concurrently
+        against the same shared translator instance.
         """
         expected_ids = sorted(_parse_marker_ids(marked_source).keys())
         if not expected_ids:
-            return marked_source
+            return marked_source, TokenUsage(0, 0)
 
         glossary_block = _build_glossary_block(marked_source, glossary)
         prompt_parts = [SYSTEM_PROMPT]
@@ -218,8 +255,13 @@ class BaseTranslator(ABC):
         prompt_parts.append(marked_source)
         prompt = "\n\n".join(prompt_parts)
 
+        total_usage = TokenUsage(0, 0)
         try:
-            translated = self._call_with_retry(lambda: self.translate_raw(prompt))
+            translated, call_usage = self._call_with_retry(lambda: self.translate_raw(prompt))
+            total_usage = TokenUsage(
+                total_usage.prompt_tokens + call_usage.prompt_tokens,
+                total_usage.completion_tokens + call_usage.completion_tokens,
+            )
         except Exception:
             logger.warning(
                 "Full-file translation failed; falling back to per-marker retry for all %d markers",
@@ -246,22 +288,34 @@ class BaseTranslator(ABC):
             original_content = _extract_marker_content(marked_source, marker_id)
             if original_content is None:
                 original_content = _extract_marker_content_fallback(marked_source, marker_id)
-            fallback_content = self._fallback_translate_marker(marker_id, original_content)
+            fallback_content, fallback_usage = self._fallback_translate_marker(
+                marker_id, original_content
+            )
+            total_usage = TokenUsage(
+                total_usage.prompt_tokens + fallback_usage.prompt_tokens,
+                total_usage.completion_tokens + fallback_usage.completion_tokens,
+            )
             if fallback_content is not None:
                 result_pieces[marker_id] = fallback_content
             else:
                 # Keep original content untranslated (design.md §5.3).
                 result_pieces[marker_id] = original_content
 
-        return _splice_markers(expected_ids, result_pieces)
+        return _splice_markers(expected_ids, result_pieces), total_usage
 
-    def _fallback_translate_marker(self, marker_id: int, original_content: str) -> str | None:
+    def _fallback_translate_marker(
+        self, marker_id: int, original_content: str
+    ) -> tuple[str | None, TokenUsage]:
         """Attempt a single isolated retranslation of one marker's content.
 
         Wraps `original_content` back in its own marker pair and sends a
-        stricter single-paragraph prompt. Returns the validated translated
-        content on success, or None if the fallback itself fails validation
-        or raises `TranslationError` (caller falls back to original text).
+        stricter single-paragraph prompt. Returns
+        `(validated_translated_content, usage)` on success, or `(None,
+        usage)` if the fallback itself fails validation (caller falls back
+        to original text) -- `usage` is `TokenUsage(0, 0)` only when the
+        call raised `TranslationError` before any response was received;
+        a validation failure on an actual response still carries that
+        response's billed usage.
         """
         wrapped = f"⟦{marker_id}⟧{original_content}⟦/{marker_id}⟧"
         fallback_prompt = (
@@ -270,17 +324,17 @@ class BaseTranslator(ABC):
             f"{wrapped}"
         )
         try:
-            response = self._call_with_retry(lambda: self.translate_raw(fallback_prompt))
+            response, usage = self._call_with_retry(lambda: self.translate_raw(fallback_prompt))
         except Exception:
-            return None
+            return None, TokenUsage(0, 0)
 
         status = _parse_marker_ids(response)
         if not status.get(marker_id, False):
-            return None
+            return None, usage
         content = _extract_marker_content(response, marker_id)
         if content is None or not _is_valid_translation(content):
-            return None
-        return content
+            return None, usage
+        return content, usage
 
 
 def _splice_markers(expected_ids: list[int], pieces: dict[int, str]) -> str:

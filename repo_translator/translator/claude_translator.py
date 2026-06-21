@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from anthropic import Anthropic, APITimeoutError, RateLimitError as AnthropicRateLimitError
 
-from repo_translator.translator.base import BaseTranslator, RateLimitError
+from repo_translator.translator.base import BaseTranslator, RateLimitError, TokenUsage
 
 #: Per-call timeout in seconds (design.md §5.3: "单段落超时 30s").
 DEFAULT_TIMEOUT = 30.0
@@ -28,7 +28,7 @@ class ClaudeTranslator(BaseTranslator):
         self.temperature = temperature
         self.client = Anthropic(api_key=api_key, base_url=base_url, timeout=timeout)
 
-    def translate_raw(self, prompt: str) -> str:
+    def translate_raw(self, prompt: str) -> tuple[str, TokenUsage]:
         try:
             response = self.client.messages.create(
                 model=self.model,
@@ -40,4 +40,8 @@ class ClaudeTranslator(BaseTranslator):
             raise RateLimitError(str(exc)) from exc
         except APITimeoutError as exc:
             raise TimeoutError(str(exc)) from exc
-        return "".join(block.text for block in response.content if block.type == "text")
+        text = "".join(block.text for block in response.content if block.type == "text")
+        usage = response.usage
+        if usage is None:
+            return text, TokenUsage(0, 0)
+        return text, TokenUsage(usage.input_tokens, usage.output_tokens)
