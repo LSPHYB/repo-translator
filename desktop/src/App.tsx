@@ -14,6 +14,7 @@ import AppShell, { type PageId } from './components/AppShell';
 import DashboardScreen from './screens/DashboardScreen';
 import ReposScreen from './screens/ReposScreen';
 import GlossaryScreen from './screens/GlossaryScreen';
+import SettingsScreen from './screens/SettingsScreen';
 import PlaceholderScreen from './screens/PlaceholderScreen';
 import ConsoleDrawerPlaceholder from './screens/ConsoleDrawerPlaceholder';
 
@@ -42,7 +43,7 @@ function App() {
     repos: <ReposScreen />,
     glossary: <GlossaryScreen />,
     usage: <PlaceholderScreen title={SCREEN_TITLES.usage} />,
-    settings: <PlaceholderScreen title={SCREEN_TITLES.settings} />,
+    settings: <SettingsScreen />,
     logs: <PlaceholderScreen title={SCREEN_TITLES.logs} />,
   };
 

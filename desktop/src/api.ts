@@ -135,7 +135,14 @@ export function health(): Promise<HealthResponse> {
 
 export interface TranslatorConfig {
   engine: string;
-  api_key?: string | null;
+  // GET /config never returns the literal key (see _serialize_config in
+  // api_server.py) -- only whether one is currently stored.
+  api_key_set: boolean;
+  // Write-only: only meaningful in a PUT request body, never present in a
+  // GET response. Send a non-empty string to set/replace the stored key, an
+  // empty string "" to clear it, or omit the field entirely to leave the
+  // stored key unchanged.
+  api_key?: string;
   model?: string | null;
   base_url?: string | null;
   max_tokens: number;
