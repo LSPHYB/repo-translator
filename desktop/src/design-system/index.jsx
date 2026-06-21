@@ -874,7 +874,14 @@ export function RepoCard({
           <RepoCardMoreMenu
             onMore={onMore}
             items={[
-              { id: 'configure', label: '排除项配置', icon: REPO_CARD_ICON.configure, onClick: onConfigure },
+              {
+                id: 'configure',
+                label: '排除项配置',
+                icon: REPO_CARD_ICON.configure,
+                onClick: onConfigure,
+                disabled: !onConfigure,
+                title: onConfigure ? undefined : '即将推出',
+              },
               { id: 'remove', label: '移出跟踪', icon: REPO_CARD_ICON.remove, onClick: onRemove, danger: true },
             ]}
           />
@@ -886,7 +893,14 @@ export function RepoCard({
           <Button size="sm" variant="ghost" icon={REPO_CARD_ICON.openDir} onClick={onOpenDir}>
             打开目录
           </Button>
-          <Button size="sm" variant="ghost" icon={REPO_CARD_ICON.viewDocs} onClick={onViewDocs}>
+          <Button
+            size="sm"
+            variant="ghost"
+            icon={REPO_CARD_ICON.viewDocs}
+            onClick={onViewDocs}
+            disabled={!onViewDocs}
+            title={onViewDocs ? undefined : '即将推出'}
+          >
             查看译文
           </Button>
         </div>
@@ -963,7 +977,10 @@ function RepoCardMoreMenu({ items = [], onMore }) {
               key={it.id}
               type="button"
               role="menuitem"
+              disabled={it.disabled}
+              title={it.title}
               onClick={() => {
+                if (it.disabled) return;
                 setOpen(false);
                 if (it.onClick) it.onClick();
               }}
@@ -975,17 +992,20 @@ function RepoCardMoreMenu({ items = [], onMore }) {
                 padding: '9px 10px',
                 borderRadius: 8,
                 border: 'none',
-                cursor: 'pointer',
+                cursor: it.disabled ? 'not-allowed' : 'pointer',
                 background: 'transparent',
                 textAlign: 'left',
                 fontFamily: 'var(--font-sans)',
                 fontSize: 13.5,
+                opacity: it.disabled ? 0.5 : 1,
                 color: it.danger ? 'var(--status-error)' : 'var(--text-primary)',
               }}
               onMouseEnter={(e) => {
+                if (it.disabled) return;
                 e.currentTarget.style.background = it.danger ? 'var(--status-error-bg)' : 'var(--surface-card)';
               }}
               onMouseLeave={(e) => {
+                if (it.disabled) return;
                 e.currentTarget.style.background = 'transparent';
               }}
             >

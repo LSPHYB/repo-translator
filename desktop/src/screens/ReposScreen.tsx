@@ -42,10 +42,13 @@
  * - "排除项配置" / "查看译文" repo-card actions and the file row's
  *   "查看译文" equivalent: no backend endpoint exists for either (excluded-
  *   pattern config has no API, and there is no "open a specific translated
- *   file" endpoint). Rendered as visible-but-disabled buttons rather than
- *   omitted (so the feature's existence is still discoverable) or wired to
- *   a fake toast -- per the plan's rule against faking interactions that
- *   don't do anything real.
+ *   file" endpoint). This screen simply never passes `onConfigure`/
+ *   `onViewDocs` to `RepoCard`. `RepoCard` itself (design-system/index.jsx)
+ *   derives `disabled` from whether each handler prop is present, so both
+ *   affordances render visible-but-disabled (reduced opacity, "即将推出"
+ *   tooltip, no-op on click) automatically -- not wired to a fake toast or
+ *   a hand-rolled disabled state here, per the plan's rule against faking
+ *   interactions that don't do anything real.
  * - "在文件管理器中打开" DOES have a real implementation: `@tauri-apps/
  *   plugin-opener`'s `revealItemInDir` (confirmed installed in
  *   desktop/node_modules at v2.5.4, registered in src-tauri/src/lib.rs via
