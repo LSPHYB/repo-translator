@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 
 import pathspec
 
-from repo_translator import cache_manager
+from repo_translator import cache_manager, usage_manager
 from repo_translator.git_manager import (
     GitOperationError,
     clone_or_pull,
@@ -33,6 +33,7 @@ from repo_translator.parser.markdown_parser import (
     parse_blocks,
     splice,
 )
+from repo_translator.translator.base import TokenUsage
 from repo_translator.translator.factory import create_translator
 
 if TYPE_CHECKING:
@@ -49,6 +50,7 @@ def sync_repo(
     *,
     only_files: list[str] | None = None,
     should_cancel: Callable[[], bool] | None = None,
+    usage: dict | None = None,
 ) -> dict:
     """Run one full sync cycle for ``repo_config``.
 
@@ -65,6 +67,13 @@ def sync_repo(
 
     Files matching any glob in ``app_config.output.exclude`` are skipped
     entirely (never translated, never copied to output -- SCRATCH S6).
+
+    ``usage``, if given, is a `usage_manager`-shaped dict that is mutated in
+    place (same mutate-and-return convention as `cache_manager.update`) to
+    record per-file token usage via `usage_manager.record` -- this is purely
+    additive: omitting it (the default) behaves exactly as before. The
+    return type of this function does NOT change; only ``cache`` is
+    returned, regardless of whether ``usage`` was passed.
     """
 
     base_dir = Path(app_config.output.base_dir).expanduser()
@@ -132,7 +141,7 @@ def sync_repo(
     translator = create_translator(app_config.translator)
     concurrency = app_config.sync.concurrency
 
-    results: list[tuple[str, bool, str | None]] = []
+    results: list[tuple[str, bool, str | None, TokenUsage]] = []
 
     with ThreadPoolExecutor(max_workers=concurrency) as executor:
         future_to_path = {}
@@ -161,8 +170,8 @@ def sync_repo(
             for future in as_completed(future_to_path, timeout=600):
                 file_path = future_to_path[future]
                 try:
-                    success, error_message = future.result()
-                    results.append((file_path, success, error_message))
+                    success, error_message, file_usage = future.result()
+                    results.append((file_path, success, error_message, file_usage))
                 except Exception as exc:
                     logger.warning(
                         "Unexpected error processing %r in repo %r",
@@ -170,7 +179,7 @@ def sync_repo(
                         repo_config.name,
                         exc_info=True,
                     )
-                    results.append((file_path, False, str(exc)))
+                    results.append((file_path, False, str(exc), TokenUsage(0, 0)))
         except TimeoutError:
             logger.warning(
                 "Sync repo %r: timed out waiting for futures to complete",
@@ -191,9 +200,11 @@ def sync_repo(
     # 5. Update cache for successfully processed files; record an error-only
     # entry for failed ones (cache_manager.record_error) so the desktop API's
     # per-file status endpoint has somewhere to read the failure reason from.
-    now = datetime.now(timezone.utc).isoformat()
+    now_dt = datetime.now(timezone.utc)
+    now = now_dt.isoformat()
+    today = now_dt.date().isoformat()
     succeeded = 0
-    for file_path, success, error_message in results:
+    for file_path, success, error_message, file_usage in results:
         if success:
             blob_hash = file_blob_map[file_path]
             cache = cache_manager.update(
@@ -203,6 +214,21 @@ def sync_repo(
         else:
             cache = cache_manager.record_error(
                 cache, repo_config.name, file_path, error_message or "", now
+            )
+
+        # Record usage whenever a file's TokenUsage is nonzero, regardless
+        # of whether the file ultimately succeeded -- a write failure after
+        # a successful LLM call still consumed billed tokens.
+        if usage is not None and (
+            file_usage.prompt_tokens or file_usage.completion_tokens
+        ):
+            usage_manager.record(
+                usage,
+                repo_config.name,
+                app_config.translator.engine,
+                today,
+                file_usage.prompt_tokens,
+                file_usage.completion_tokens,
             )
 
     logger.info(
@@ -219,12 +245,17 @@ def sync_all(
     app_config: AppConfig,
     cache: dict,
     should_cancel: Callable[[], bool] | None = None,
+    *,
+    usage: dict | None = None,
 ) -> dict:
     """Sync every repo in ``app_config.repos`` sequentially.
 
     Checks ``should_cancel()`` before starting *each repo* (in addition to
     ``sync_repo``'s own per-file check) so a batch run can be stopped between
     repos, not just between files within one repo.
+
+    ``usage``, if given, is forwarded to each ``sync_repo`` call and mutated
+    in place exactly as described in ``sync_repo``'s docstring.
     """
     for repo_config in app_config.repos:
         if should_cancel is not None and should_cancel():
@@ -233,7 +264,11 @@ def sync_all(
             )
             break
         cache = sync_repo(
-            repo_config, app_config, cache, should_cancel=should_cancel
+            repo_config,
+            app_config,
+            cache,
+            should_cancel=should_cancel,
+            usage=usage,
         )
     return cache
 
@@ -272,14 +307,19 @@ def _process_one_file(
     translator: BaseTranslator,
     glossary: list[GlossaryEntry],
     output_suffix: str,
-) -> tuple[bool, str | None]:
+) -> tuple[bool, str | None, TokenUsage]:
     """Translate *file_path* and write output files.
 
-    Returns a ``(success, error_message)`` tuple: ``(True, None)`` on
-    success, ``(False, str(exc))`` on any failure (read error, translation
-    error, write error). Every failure case also logs a warning so the
-    caller can skip the cache update for this file (recording the error
-    instead, see ``sync_repo``) without affecting other files.
+    Returns a ``(success, error_message, usage)`` tuple: ``(True, None,
+    usage)`` on success, ``(False, str(exc), usage)`` on any failure (read
+    error, translation error, write error). ``usage`` is whatever
+    `BaseTranslator.translate_file` accumulated and returned -- it is
+    `TokenUsage(0, 0)` for a read failure (no LLM call was ever made), but
+    can be nonzero even on a *write* failure, since the LLM call already
+    succeeded and was billed before the write was attempted. Every failure
+    case also logs a warning so the caller can skip the cache update for
+    this file (recording the error instead, see ``sync_repo``) without
+    affecting other files.
     """
 
     # Read source
@@ -293,9 +333,10 @@ def _process_one_file(
             exc,
             extra={"event": "file_failed", "path": file_path, "error": str(exc)},
         )
-        return False, str(exc)
+        return False, str(exc), TokenUsage(0, 0)
 
     # Parse -> embed markers -> translate -> extract -> splice
+    usage = TokenUsage(0, 0)
     try:
         logger.info(
             "Translating %r ...",
@@ -304,7 +345,7 @@ def _process_one_file(
         )
         blocks = parse_blocks(source_content)
         marked = embed_markers(source_content, blocks)
-        translated_marked = translator.translate_file(marked, glossary)
+        translated_marked, usage = translator.translate_file(marked, glossary)
         translations = extract_translations(translated_marked)
         translated_content = splice(source_content, blocks, translations)
     except Exception as exc:
@@ -314,7 +355,7 @@ def _process_one_file(
             exc,
             extra={"event": "file_failed", "path": file_path, "error": str(exc)},
         )
-        return False, str(exc)
+        return False, str(exc), usage
 
     # Compute output paths: docs/guide.md -> docs/guide_zh.md
     assert file_path.endswith(".md"), (
@@ -338,11 +379,11 @@ def _process_one_file(
             exc,
             extra={"event": "file_failed", "path": file_path, "error": str(exc)},
         )
-        return False, str(exc)
+        return False, str(exc), usage
 
     logger.info(
         "Translated %r",
         file_path,
         extra={"event": "file_translated", "path": file_path},
     )
-    return True, None
+    return True, None, usage

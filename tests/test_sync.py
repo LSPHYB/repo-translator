@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import subprocess
 from collections.abc import Callable
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -20,6 +21,7 @@ from repo_translator.config import (
 )
 from repo_translator.git_manager import GitOperationError
 from repo_translator.sync import sync_all, sync_repo
+from repo_translator.translator.base import TokenUsage
 
 
 # ---------------------------------------------------------------------------
@@ -49,12 +51,16 @@ def _init_repo_with_files(repo_dir: Path, files: dict[str, str]) -> None:
     )
 
 
-def _make_fake_translate_file() -> Callable[[str, list], str]:
-    """Return a ``translate_file(marked_source, glossary) -> str`` fake.
+def _make_fake_translate_file() -> Callable[[str, list], tuple[str, TokenUsage]]:
+    """Return a ``translate_file(marked_source, glossary) -> (str, TokenUsage)``
+    fake.
 
     The fake wraps every marker's content with ``[ZH] ... [/ZH]`` so the
     resulting output is clearly distinguishable from the original and still
-    round-trips through ``extract_translations``.
+    round-trips through ``extract_translations``. Returns a fixed nonzero
+    ``TokenUsage`` per call so usage-accumulation behavior in ``sync.py`` is
+    exercised by every test that uses this fake (~20 call sites via
+    ``mock_translator.translate_file.side_effect = fake``).
     """
 
     def _replace(m: re.Match) -> str:
@@ -64,8 +70,9 @@ def _make_fake_translate_file() -> Callable[[str, list], str]:
 
     _MARKED_RE = re.compile(r"⟦(\d+)⟧(.*?)⟦/\1⟧", re.DOTALL)
 
-    def _translate_file(marked_source: str, glossary: list) -> str:
-        return _MARKED_RE.sub(_replace, marked_source)
+    def _translate_file(marked_source: str, glossary: list) -> tuple[str, TokenUsage]:
+        translated = _MARKED_RE.sub(_replace, marked_source)
+        return translated, TokenUsage(prompt_tokens=100, completion_tokens=50)
 
     return _translate_file
 
@@ -1045,3 +1052,155 @@ def test_sync_all_should_cancel_stops_before_next_repo(tmp_path: Path) -> None:
         result_cache = sync_all(app_config, {}, should_cancel=should_cancel)
 
     assert set(result_cache) == {"repo0"}
+
+
+# ---------------------------------------------------------------------------
+# Test: optional `usage` parameter records token usage without affecting
+# the existing `cache`-only behavior when omitted.
+# ---------------------------------------------------------------------------
+
+
+def test_sync_repo_omitting_usage_behaves_exactly_as_before(tmp_path: Path) -> None:
+    """Callers that don't pass usage= (the default) see no behavior change."""
+    repo_dir = tmp_path / "src-repo"
+    _init_repo_with_files(repo_dir, {"README.md": "# Hello\n"})
+
+    output_dir = tmp_path / "output"
+    app_config = _make_app_config(base_dir=output_dir)
+    repo_config = RepoConfig(name="test-repo", path=str(repo_dir))
+
+    mock_translator = MagicMock()
+    mock_translator.translate_file.side_effect = _make_fake_translate_file()
+
+    with patch(
+        "repo_translator.sync.create_translator", return_value=mock_translator
+    ):
+        result_cache = sync_repo(repo_config, app_config, {})
+
+    assert "test-repo" in result_cache
+    assert len(result_cache["test-repo"]) == 1
+
+
+def test_sync_repo_records_usage_for_successful_files(tmp_path: Path) -> None:
+    """Passing usage= mutates it in place with per-engine token counts,
+    using app_config.translator.engine and today's UTC date."""
+    repo_dir = tmp_path / "src-repo"
+    _init_repo_with_files(
+        repo_dir,
+        {"README.md": "# Hello\n", "docs/guide.md": "## Guide\n"},
+    )
+
+    output_dir = tmp_path / "output"
+    app_config = _make_app_config(base_dir=output_dir, engine="deepseek")
+    repo_config = RepoConfig(name="test-repo", path=str(repo_dir))
+
+    mock_translator = MagicMock()
+    mock_translator.translate_file.side_effect = _make_fake_translate_file()
+
+    usage: dict = {}
+    with patch(
+        "repo_translator.sync.create_translator", return_value=mock_translator
+    ):
+        sync_repo(repo_config, app_config, {}, usage=usage)
+
+    today = datetime.now(timezone.utc).date().isoformat()
+    # _make_fake_translate_file() returns TokenUsage(100, 50) per call, 2 files.
+    assert usage["daily"][today]["deepseek"] == {
+        "prompt_tokens": 200,
+        "completion_tokens": 100,
+        "files": 2,
+    }
+    assert usage["repos"]["test-repo"]["deepseek"] == {
+        "prompt_tokens": 200,
+        "completion_tokens": 100,
+        "files": 2,
+    }
+
+
+def test_sync_repo_records_usage_even_when_write_fails(tmp_path: Path) -> None:
+    """A file whose LLM call succeeded but whose write failed still had its
+    tokens billed -- usage must be recorded even though the file is not
+    cached as translated (cache_manager.record_error path)."""
+    repo_dir = tmp_path / "src-repo"
+    _init_repo_with_files(repo_dir, {"a.md": "# A\n"})
+
+    output_dir = tmp_path / "output"
+    app_config = _make_app_config(base_dir=output_dir, engine="claude")
+    repo_config = RepoConfig(name="test-repo", path=str(repo_dir))
+
+    fake = _make_fake_translate_file()
+    real_write_text = Path.write_text
+
+    def _failing_write_text(self, content, encoding=None):
+        if self.name in ("a.md", "a_zh.md"):
+            raise OSError("Simulated disk full")
+        return real_write_text(self, content, encoding=encoding)
+
+    usage: dict = {}
+    with patch(
+        "repo_translator.sync.create_translator",
+        return_value=MagicMock(translate_file=MagicMock(side_effect=fake)),
+    ), patch.object(Path, "write_text", _failing_write_text):
+        result_cache = sync_repo(repo_config, app_config, {}, usage=usage)
+
+    # File failed (no blob_hash in cache) ...
+    assert "blob_hash" not in result_cache["test-repo"]["a.md"]
+    # ... but usage was still recorded, since the LLM call itself succeeded
+    # and was billed before the write failure occurred.
+    today = datetime.now(timezone.utc).date().isoformat()
+    assert usage["daily"][today]["claude"] == {
+        "prompt_tokens": 100,
+        "completion_tokens": 50,
+        "files": 1,
+    }
+
+
+def test_sync_repo_does_not_record_usage_for_read_failures(tmp_path: Path) -> None:
+    """A file that fails before any LLM call (e.g. a read error) has
+    TokenUsage(0, 0) and must not create a spurious usage record."""
+    repo_dir = tmp_path / "src-repo"
+    _init_repo_with_files(repo_dir, {"README.md": "# Hello\n"})
+
+    output_dir = tmp_path / "output"
+    app_config = _make_app_config(base_dir=output_dir)
+    repo_config = RepoConfig(name="test-repo", path=str(repo_dir))
+
+    mock_translator = MagicMock()
+    mock_translator.translate_file.side_effect = _make_fake_translate_file()
+
+    usage: dict = {}
+    with patch(
+        "repo_translator.sync.create_translator", return_value=mock_translator
+    ), patch.object(
+        Path, "read_text", side_effect=OSError("simulated read failure")
+    ):
+        sync_repo(repo_config, app_config, {}, usage=usage)
+
+    assert usage == {"daily": {}, "repos": {}} or usage == {}
+
+
+def test_sync_all_forwards_usage_to_each_repo(tmp_path: Path) -> None:
+    repo_dirs = []
+    for i in range(2):
+        d = tmp_path / f"repo{i}"
+        _init_repo_with_files(d, {"README.md": f"# repo {i}\n"})
+        repo_dirs.append(d)
+
+    output_dir = tmp_path / "output"
+    app_config = _make_app_config(base_dir=output_dir, engine="openai")
+    app_config.repos = [
+        RepoConfig(name=f"repo{i}", path=str(repo_dirs[i])) for i in range(2)
+    ]
+
+    mock_translator = MagicMock()
+    mock_translator.translate_file.side_effect = _make_fake_translate_file()
+
+    usage: dict = {}
+    with patch(
+        "repo_translator.sync.create_translator", return_value=mock_translator
+    ):
+        sync_all(app_config, {}, usage=usage)
+
+    today = datetime.now(timezone.utc).date().isoformat()
+    assert usage["daily"][today]["openai"]["files"] == 2
+    assert set(usage["repos"]) == {"repo0", "repo1"}
