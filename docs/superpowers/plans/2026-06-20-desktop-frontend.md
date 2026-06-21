@@ -242,21 +242,52 @@ repo-translator/
 
 ---
 
-### Task 9: UsageScreen — resolve data-source gap before porting
+### Task 9: UsageScreen — real persistent token-usage tracking (option (a), user-confirmed 2026-06-21)
 
-**Files:** TBD, depends on the decision below.
+**Decision record:** confirmed via grep (`translator/`, `sync.py`, `cache_manager.py` contain no `usage`/`token`/`cost` tracking — only `max_tokens` request params) that this is a new feature, not a wiring task. User explicitly chose option (a) — full persistent tracking — over the plan's recommended default (d, process-lifetime only), accepting that this is larger than a typical single-screen port. Never invent fake/random numbers for this screen.
 
-**Open question (resolve with the user before writing any code for this task):** `UsageScreen.jsx`'s token/cost statistics (`daily` trend array, per-engine split, per-repo cost breakdown) have **no backing data anywhere** in the current system — `repo_translator` doesn't track token usage or cost at all today (confirm this by checking `translator/base.py` and the LLM API call sites for any usage-tracking code; if genuinely absent, this is a new feature, not a wiring task).
+**Files:**
+- Create: `repo_translator/usage_manager.py` — `usage.json` read/write/record, mirrors `cache_manager.py`'s structure and atomic-write convention exactly (own `_REPO_TRANSLATOR_HOME` computation, duplicated rather than imported, same rationale as `cache_manager.py`'s existing comment).
+- Modify: `repo_translator/translator/base.py` — add a `TokenUsage` NamedTuple (`prompt_tokens: int`, `completion_tokens: int`); change `translate_raw`'s abstract contract and `translate_file`'s return type from `str` to `tuple[str, TokenUsage]` (see Interfaces for full accumulation rules).
+- Modify: `repo_translator/translator/openai_translator.py`, `repo_translator/translator/claude_translator.py` — extract real usage from each provider's response object alongside the existing text extraction. `deepseek_translator.py` needs no change (inherits `OpenAITranslator` unchanged, same response shape).
+- Modify: `repo_translator/sync.py` — `_process_one_file` returns `tuple[bool, str | None, TokenUsage]`; `sync_repo`/`sync_all` gain an optional `usage: dict | None = None` parameter that is **mutated in place** (same mutate-and-return convention as `cache_manager.update`) — return type of `sync_repo`/`sync_all` itself does **not** change, only `cache` is returned, exactly as today. This keeps the change additive: every existing call site that doesn't pass `usage=` keeps working unchanged.
+- Modify: `repo_translator/cli.py`, `repo_translator/scheduler.py`, `repo_translator/api_server.py` — every real call site (2 in `cli.py`, 1 in `scheduler.py`, 3 in `api_server.py`) loads `usage_manager.load(usage_manager.DEFAULT_USAGE_PATH)` before calling `sync_repo`/`sync_all`, passes `usage=usage`, and `usage_manager.save(...)` after — same load/pass/save shape already used for `cache` at each of those sites.
+- Modify: `repo_translator/api_server.py` — new `GET /usage` endpoint (see Interfaces for response shape).
+- Test: `tests/test_translator_base.py` (every inline `translate_raw` override and the `FakeTranslator`/`RateLimitFakeTranslator`-style classes must return `(text, TokenUsage(...))` — there are ~7 override sites), `tests/test_openai_translator.py`/`tests/test_claude_translator.py`/`tests/test_deepseek_translator.py` (whichever exist — check actual filenames) for the real usage-extraction, `tests/test_sync.py` (the single shared `_make_fake_translate_file()` helper returns a tuple now — fixing it there fixes all ~20 call sites that use `.side_effect = fake`, no per-test edits needed), `tests/test_usage_manager.py` (new, mirrors `tests/test_cache_manager.py`'s structure), `tests/test_api_server.py` (new `GET /usage` tests + extend `_setup_temp_paths`-equivalent fixtures to also patch `usage_manager.DEFAULT_USAGE_PATH`).
+- Create: `desktop/src/screens/UsageScreen.tsx`.
+- Modify: `desktop/src/api.ts` — add `getUsage()` + response interfaces.
+- Modify: `desktop/src/App.tsx` — wire `UsageScreen` into the `usage` screen slot.
 
-Do not invent fake/random numbers for this screen in the shipped app. Present the user with options once you've confirmed there's no existing tracking:
-- (a) Add real token-usage tracking to `translator/base.py` (capture `usage` fields from each provider's API response, persist alongside `cache.json` or in a new `usage.json`) as a prerequisite mini-plan, then wire this screen to real data.
-- (b) Ship the desktop app without the Usage screen for v1 (remove it from `AppShell`'s nav), revisit later.
-- (c) Ship a deliberately minimal "记录的同步次数/字符数" stat (something genuinely derivable from `cache.json`'s existing `translated_at` timestamps and file sizes) instead of token/cost, relabeling the screen accordingly.
-- **(d) — recommended default for v1.** Display only the **current-run, non-persisted** usage numbers each provider's API response already returns (`prompt_tokens`/`completion_tokens` in the OpenAI/DeepSeek/Claude response bodies) — accumulate them in memory for the lifetime of the running app (reset on restart), no `usage.json`, no migration, no historical trend chart. Option (a)'s persistent tracking + cost conversion + historical charting is realistically its own multi-task mini-plan, not a fit for "port one more screen" scope; option (c) trades away the screen's actual subject (cost/usage) for a proxy metric (sync counts) that doesn't answer the question a user opens this screen to ask. Option (d) is the one that's both achievable in this plan's scope and still real, unfabricated data: capture a value the API call already returns, hold it in a process-lifetime counter, surface it via a small addition to `/health` or a new lightweight `GET /usage-session` endpoint. Default to (d) unless the user has a specific reason to want persistent historical tracking now.
+**Interfaces:**
+- **Concurrency correctness (verify this explicitly in review):** `sync_repo` shares one `translator` instance across all files in its `ThreadPoolExecutor`. Usage must flow purely through return values (`translate_raw` → `_call_with_retry` → `translate_file` → `_process_one_file`, each returning `(text, TokenUsage)` and accumulating locally), **never** through a mutable instance attribute on `translator` itself — that would be a real data race across worker threads. `translate_file`'s accumulation: starts at `TokenUsage(0, 0)`, adds the full-file `_call_with_retry` attempt's usage (if it didn't raise), plus every per-marker `_fallback_translate_marker` call's usage (a fallback call's tokens were billed regardless of whether its result ultimately passed validation).
+- `usage.json` schema (token counts only — no cost stored, cost is computed at read time so a pricing-table update never needs a data migration):
+  ```json
+  {
+    "daily": {"<YYYY-MM-DD UTC>": {"<engine>": {"prompt_tokens": 0, "completion_tokens": 0, "files": 0}}},
+    "repos": {"<repo_name>": {"<engine>": {"prompt_tokens": 0, "completion_tokens": 0, "files": 0}}}
+  }
+  ```
+  `usage_manager.record(usage, repo_name, engine, date, prompt_tokens, completion_tokens) -> dict` increments both views in one call (mutates and returns `usage`, same style as `cache_manager.update`). Record whenever a file's `TokenUsage` is nonzero, **regardless of whether the file ultimately succeeded** (e.g. a write failure after a successful LLM call still consumed billed tokens). Date is the UTC calendar date (`datetime.now(timezone.utc).date().isoformat()`), matching `sync.py`'s existing UTC convention for `translated_at`.
+- `GET /usage` response shape (backend does all aggregation so the frontend stays dumb, consistent with `/repos/{name}/files`'s existing precedent):
+  ```json
+  {
+    "daily": [{"date": "2026-05-23", "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}, ...exactly 30 entries, oldest first, zero-filled for days with no data, ending today...],
+    "by_engine": [{"engine": "deepseek", "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "cost_usd": 0.0}, ...],
+    "by_repo": [{"repo": "langchain", "files": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "cost_usd": 0.0}, ...],
+    "totals": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "cost_usd": 0.0, "files": 0}
+  }
+  ```
+  Cost is computed server-side from a small hardcoded per-engine USD-per-1K-token table in `usage_manager.py` (prompt rate, completion rate) — these are point-in-time public list-price estimates and **will drift from real provider pricing over time**; comment this explicitly next to the table. Unknown/future engine names fall back to `(0.0, 0.0)` (cost shows as `$0`, never crashes).
+- Re-run Task 0.5's snapshot capture (new `/usage` endpoint) and commit the updated snapshot.
+- Frontend: drop the mockup's `7d`/`30d`/`全部` range `Select` for v1 — the backend always returns a fixed last-30-day window plus all-time totals/breakdowns, and a selector that doesn't actually change anything would be misleading (same "drop rather than fake" precedent as Task 7's dropped "测试连接" button / "开启自动同步" switch). Map the mockup's 4 `StatCard`s to `totals` (本月消耗 Token / 本月成本估算 / 已翻译文件 / 单文件均价 — compute the per-file average client-side from `totals`), the bar chart to `daily`, the engine list to `by_engine`, the repo table to `by_repo`.
 
-- [ ] Step 1: Confirm there is no existing usage-tracking code (grep `translator/`, `sync.py`, `cache_manager.py` for `usage`/`token`/`cost`).
-- [ ] Step 2: Get an explicit decision from the user on (a)/(b)/(c)/(d) above.
-- [ ] Step 3: Implement per the chosen option (this plan does not pre-specify the steps since they depend entirely on that decision). If (a) or (d) is chosen and adds a new endpoint, re-run Task 0.5's snapshot capture as part of this task's commit.
+- [ ] Step 1: Add `TokenUsage`, change `translate_raw`/`translate_file`'s contracts in `base.py`, update the two real provider engines to extract real usage. Fix the shared test fakes (`tests/test_translator_base.py`'s override sites, `tests/test_sync.py`'s `_make_fake_translate_file()`) to match. Run `uv run pytest tests/test_translator_base.py tests/test_*_translator.py -q` and confirm green before moving on.
+- [ ] Step 2: Add `usage_manager.py` (+ `tests/test_usage_manager.py`), wire `sync.py`'s `_process_one_file`/`sync_repo`/`sync_all` to accumulate and record usage via the new optional `usage=` parameter (no change to existing callers that omit it). Run `uv run pytest tests/test_sync.py tests/test_usage_manager.py -q`.
+- [ ] Step 3: Wire all 6 real call sites (`cli.py` x2, `scheduler.py` x1, `api_server.py` x3) to load/pass/save `usage.json`, same shape as the existing `cache` load/save. Add `GET /usage` to `api_server.py` with the aggregation/cost-table logic above; extend test path-patching fixtures to cover `usage_manager.DEFAULT_USAGE_PATH`. Run the full `uv run pytest tests/ -q`.
+- [ ] Step 4: Re-capture and commit the Task 0.5 snapshot update (new `/usage` endpoint).
+- [ ] Step 5: Port `UsageScreen.jsx` → `.tsx`, wire to `GET /usage`, wire `App.tsx`'s `usage` slot.
+- [ ] Step 6: Manual verification: run a real sync against a small local test repo with a real (or fake-but-realistic) translator, confirm `usage.json` gets nonzero counts and `GET /usage`/the UI reflect them; confirm `cache.json`-only existing behavior is unaffected when `usage=` is omitted (e.g. any caller not yet updated, if applicable).
+- [ ] Step 7: Commit (this task's backend usage-tracking core, persistence+endpoint, and frontend screen may be separate commits, similar to Task 7/8's precedent).
 
 ---
 
