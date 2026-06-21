@@ -9,6 +9,7 @@ import subprocess
 import threading
 from collections.abc import Callable
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -23,6 +24,7 @@ from repo_translator.config import (
     load_config,
     save_config,
 )
+from repo_translator.translator.base import TokenUsage
 
 
 def test_health_returns_ok() -> None:
@@ -101,9 +103,10 @@ def _patch_config_path(tmp_path: Path):
     """
     config_path = tmp_path / ".repo-translator" / "config.yaml"
     cache_path = tmp_path / ".repo-translator" / "cache.json"
+    usage_path = tmp_path / ".repo-translator" / "usage.json"
     with patch("repo_translator.config.DEFAULT_CONFIG_PATH", config_path), patch(
         "repo_translator.cache_manager.DEFAULT_CACHE_PATH", cache_path
-    ):
+    ), patch("repo_translator.usage_manager.DEFAULT_USAGE_PATH", usage_path):
         save_config(
             AppConfig(output=OutputConfig(base_dir=str(tmp_path / "output"))),
             config_path,
@@ -403,14 +406,15 @@ def test_delete_repo_missing_returns_404(tmp_path: Path) -> None:
     assert resp.status_code == 404
 
 
-def _make_fake_translate_file() -> Callable[[str, list], str]:
+def _make_fake_translate_file() -> Callable[[str, list], tuple[str, TokenUsage]]:
     _MARKED_RE = re.compile(r"⟦(\d+)⟧(.*?)⟦/\1⟧", re.DOTALL)
 
     def _replace(m: re.Match) -> str:
         return f"⟦{m.group(1)}⟧[ZH] {m.group(2)} [/ZH]⟦/{m.group(1)}⟧"
 
-    def _translate_file(marked_source: str, glossary: list) -> str:
-        return _MARKED_RE.sub(_replace, marked_source)
+    def _translate_file(marked_source: str, glossary: list) -> tuple[str, TokenUsage]:
+        translated = _MARKED_RE.sub(_replace, marked_source)
+        return translated, TokenUsage(prompt_tokens=100, completion_tokens=50)
 
     return _translate_file
 
@@ -760,3 +764,128 @@ def test_logs_ws_includes_event_fields_when_present_via_extra() -> None:
     assert payload["event"] == "file_failed"
     assert payload["path"] == "docs/guide.md"
     assert payload["error"] == "boom"
+
+
+# ---------------------------------------------------------------------------
+# GET /usage
+# ---------------------------------------------------------------------------
+
+
+def test_get_usage_empty_returns_zero_filled_30_day_window(tmp_path: Path) -> None:
+    with _patch_config_path(tmp_path):
+        client = TestClient(app)
+        resp = client.get("/usage")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["daily"]) == 30
+    # Oldest first, ending today (UTC).
+    today = datetime.now(timezone.utc).date().isoformat()
+    assert body["daily"][-1]["date"] == today
+    for day in body["daily"]:
+        assert day["prompt_tokens"] == 0
+        assert day["completion_tokens"] == 0
+        assert day["total_tokens"] == 0
+    assert body["by_engine"] == []
+    assert body["by_repo"] == []
+    assert body["totals"] == {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "cost_usd": 0.0,
+        "files": 0,
+    }
+
+
+def test_get_usage_aggregates_recorded_usage(tmp_path: Path) -> None:
+    from repo_translator import usage_manager
+
+    with _patch_config_path(tmp_path):
+        today = datetime.now(timezone.utc).date().isoformat()
+        usage = usage_manager.load(usage_manager.DEFAULT_USAGE_PATH)
+        usage_manager.record(usage, "langchain", "deepseek", today, 1000, 500)
+        usage_manager.record(usage, "langchain", "claude", today, 200, 100)
+        usage_manager.record(usage, "other-repo", "deepseek", today, 300, 150)
+        usage_manager.save(usage_manager.DEFAULT_USAGE_PATH, usage)
+
+        client = TestClient(app)
+        resp = client.get("/usage")
+
+    assert resp.status_code == 200
+    body = resp.json()
+
+    # Today's entry reflects all engines combined.
+    today_entry = body["daily"][-1]
+    assert today_entry["date"] == today
+    assert today_entry["prompt_tokens"] == 1500
+    assert today_entry["completion_tokens"] == 750
+    assert today_entry["total_tokens"] == 2250
+
+    by_engine = {e["engine"]: e for e in body["by_engine"]}
+    assert by_engine["deepseek"]["prompt_tokens"] == 1300
+    assert by_engine["deepseek"]["completion_tokens"] == 650
+    assert by_engine["deepseek"]["total_tokens"] == 1950
+    assert by_engine["deepseek"]["cost_usd"] > 0
+    assert by_engine["claude"]["prompt_tokens"] == 200
+
+    by_repo = {r["repo"]: r for r in body["by_repo"]}
+    assert by_repo["langchain"]["files"] == 2
+    assert by_repo["langchain"]["prompt_tokens"] == 1200
+    assert by_repo["langchain"]["cost_usd"] > 0
+    assert by_repo["other-repo"]["files"] == 1
+    assert by_repo["other-repo"]["prompt_tokens"] == 300
+
+    totals = body["totals"]
+    assert totals["prompt_tokens"] == 1500
+    assert totals["completion_tokens"] == 750
+    assert totals["total_tokens"] == 2250
+    assert totals["files"] == 3
+    assert totals["cost_usd"] > 0
+
+
+def test_get_usage_unknown_engine_falls_back_to_zero_cost(tmp_path: Path) -> None:
+    """An engine name not present in the pricing table must not crash --
+    cost shows as $0."""
+    from repo_translator import usage_manager
+
+    with _patch_config_path(tmp_path):
+        today = datetime.now(timezone.utc).date().isoformat()
+        usage = usage_manager.load(usage_manager.DEFAULT_USAGE_PATH)
+        usage_manager.record(usage, "my-repo", "some-future-engine", today, 1000, 1000)
+        usage_manager.save(usage_manager.DEFAULT_USAGE_PATH, usage)
+
+        client = TestClient(app)
+        resp = client.get("/usage")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    by_engine = {e["engine"]: e for e in body["by_engine"]}
+    assert by_engine["some-future-engine"]["cost_usd"] == 0.0
+    assert body["totals"]["cost_usd"] == 0.0
+
+
+def test_get_usage_old_entries_outside_30_day_window_excluded_from_daily(
+    tmp_path: Path,
+) -> None:
+    """A usage record for a day older than 30 days ago must not appear in
+    the `daily` window, but still counts toward by_engine/by_repo/totals
+    (which are all-time, not windowed)."""
+    from repo_translator import usage_manager
+
+    with _patch_config_path(tmp_path):
+        old_day = "2020-01-01"
+        usage = usage_manager.load(usage_manager.DEFAULT_USAGE_PATH)
+        usage_manager.record(usage, "langchain", "deepseek", old_day, 999, 999)
+        usage_manager.save(usage_manager.DEFAULT_USAGE_PATH, usage)
+
+        client = TestClient(app)
+        resp = client.get("/usage")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert all(day["date"] != old_day for day in body["daily"])
+    assert all(day["total_tokens"] == 0 for day in body["daily"])
+    # But all-time aggregates still include it.
+    assert body["totals"]["prompt_tokens"] == 999
+    by_engine = {e["engine"]: e for e in body["by_engine"]}
+    assert by_engine["deepseek"]["prompt_tokens"] == 999

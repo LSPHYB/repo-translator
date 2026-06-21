@@ -10,7 +10,7 @@ from pathlib import Path
 import click
 import yaml
 
-from repo_translator import cache_manager, git_manager, scheduler, sync
+from repo_translator import cache_manager, git_manager, scheduler, sync, usage_manager
 from repo_translator.config import (
     AppConfig,
     RepoConfig,
@@ -165,8 +165,9 @@ def add(url_or_path: str, name: str | None) -> None:  # noqa: D401
         click.echo("No markdown files found.")
     else:
         click.echo(f"Found {total_md} markdown file(s) ...")
+        usage = usage_manager.load(usage_manager.DEFAULT_USAGE_PATH)
         try:
-            cache = sync.sync_repo(repo_config, config, cache)
+            cache = sync.sync_repo(repo_config, config, cache, usage=usage)
         except Exception as e:
             raise click.ClickException(
                 f"Translation engine unavailable: {e}\n"
@@ -174,6 +175,7 @@ def add(url_or_path: str, name: str | None) -> None:  # noqa: D401
                 f"and retry with 'repo-translator translate {repo_name}'."
             ) from e
         cache_manager.save(cache_manager.DEFAULT_CACHE_PATH, cache)
+        usage_manager.save(usage_manager.DEFAULT_USAGE_PATH, usage)
         succeeded = len(cache.get(repo_name, {}))
         click.echo(f"[{succeeded}/{total_md}] Done.")
 
@@ -222,14 +224,16 @@ def translate(name: str) -> None:
         return
 
     old_count = len(cache.get(name, {}))
+    usage = usage_manager.load(usage_manager.DEFAULT_USAGE_PATH)
     try:
-        cache = sync.sync_repo(repo_config, config, cache)
+        cache = sync.sync_repo(repo_config, config, cache, usage=usage)
     except Exception as e:
         raise click.ClickException(
             f"Translation engine unavailable: {e}\n"
             f"Check 'repo-translator config' (translator.engine/api_key)."
         ) from e
     cache_manager.save(cache_manager.DEFAULT_CACHE_PATH, cache)
+    usage_manager.save(usage_manager.DEFAULT_USAGE_PATH, usage)
     new_count = len(cache.get(name, {}))
 
     click.echo(

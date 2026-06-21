@@ -24,9 +24,10 @@ import logging
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.schedulers.blocking import BlockingScheduler
 
-from repo_translator import cache_manager, sync
+from repo_translator import cache_manager, sync, usage_manager
 from repo_translator.cache_manager import DEFAULT_CACHE_PATH
 from repo_translator.config import AppConfig, RepoConfig
+from repo_translator.usage_manager import DEFAULT_USAGE_PATH
 
 logger = logging.getLogger(__name__)
 
@@ -42,8 +43,10 @@ def _make_job(repo_config: RepoConfig, app_config: AppConfig) -> callable:
     def _job() -> None:
         try:
             cache = cache_manager.load(DEFAULT_CACHE_PATH)
-            cache = sync.sync_repo(repo_config, app_config, cache)
+            usage = usage_manager.load(DEFAULT_USAGE_PATH)
+            cache = sync.sync_repo(repo_config, app_config, cache, usage=usage)
             cache_manager.save(DEFAULT_CACHE_PATH, cache)
+            usage_manager.save(DEFAULT_USAGE_PATH, usage)
         except Exception:
             logger.exception(
                 "Watch job failed for repo %r; will retry on next interval",

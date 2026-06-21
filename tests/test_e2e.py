@@ -27,6 +27,7 @@ from click.testing import CliRunner
 
 from repo_translator.cli import main
 from repo_translator.config import load_config
+from repo_translator.translator.base import TokenUsage
 
 
 @pytest.fixture
@@ -64,8 +65,9 @@ def _commit_all(repo_dir: Path, message: str) -> None:
     subprocess.run(["git", "-C", str(repo_dir), "commit", "-q", "-m", message], check=True)
 
 
-def _make_fake_translate_file() -> Callable[[str, list], str]:
-    """Return a ``translate_file(marked_source, glossary) -> str`` fake.
+def _make_fake_translate_file() -> Callable[[str, list], tuple[str, TokenUsage]]:
+    """Return a ``translate_file(marked_source, glossary) -> (str, TokenUsage)``
+    fake.
 
     Wraps every marker's content with ``[ZH] ... [/ZH]`` so the resulting
     output is clearly distinguishable from the original and still
@@ -79,8 +81,9 @@ def _make_fake_translate_file() -> Callable[[str, list], str]:
 
     _MARKED_RE = re.compile(r"⟦(\d+)⟧(.*?)⟦/\1⟧", re.DOTALL)
 
-    def _translate_file(marked_source: str, glossary: list) -> str:
-        return _MARKED_RE.sub(_replace, marked_source)
+    def _translate_file(marked_source: str, glossary: list) -> tuple[str, TokenUsage]:
+        translated = _MARKED_RE.sub(_replace, marked_source)
+        return translated, TokenUsage(prompt_tokens=100, completion_tokens=50)
 
     return _translate_file
 
@@ -90,6 +93,10 @@ def _setup_temp_paths(tmp_path: Path) -> tuple[Path, Path]:
     config_dir = tmp_path / ".repo-translator"
     config_dir.mkdir()
     return config_dir / "config.yaml", config_dir / "cache.json"
+
+
+def _usage_path_for(cache_path: Path) -> Path:
+    return cache_path.parent / "usage.json"
 
 
 SOURCE_README = (
@@ -161,12 +168,14 @@ def test_add_external_repo_runs_initial_sync_and_produces_output(
     """`add <local-path>` on an external repo auto-syncs and writes output/."""
     repo_dir = _build_source_repo(tmp_path)
     config_path, cache_path = _setup_temp_paths(tmp_path)
+    usage_path = _usage_path_for(cache_path)
     output_dir = tmp_path / "output"
 
     fake_translate = _make_fake_translate_file()
 
     with patch("repo_translator.config.DEFAULT_CONFIG_PATH", config_path), \
          patch("repo_translator.cache_manager.DEFAULT_CACHE_PATH", cache_path), \
+         patch("repo_translator.usage_manager.DEFAULT_USAGE_PATH", usage_path), \
          patch("repo_translator.sync.create_translator") as mock_factory:
         mock_factory.return_value.translate_file.side_effect = fake_translate
 
@@ -242,6 +251,7 @@ def test_translate_after_change_only_updates_changed_file(
     """After `add`, modifying one file and running `translate` updates only it."""
     repo_dir = _build_source_repo(tmp_path)
     config_path, cache_path = _setup_temp_paths(tmp_path)
+    usage_path = _usage_path_for(cache_path)
     output_dir = tmp_path / "output"
 
     fake_translate = _make_fake_translate_file()
@@ -252,6 +262,7 @@ def test_translate_after_change_only_updates_changed_file(
 
     with patch("repo_translator.config.DEFAULT_CONFIG_PATH", config_path), \
          patch("repo_translator.cache_manager.DEFAULT_CACHE_PATH", cache_path), \
+         patch("repo_translator.usage_manager.DEFAULT_USAGE_PATH", usage_path), \
          patch("repo_translator.sync.create_translator") as mock_factory:
         mock_factory.return_value.translate_file.side_effect = fake_translate
 
@@ -270,6 +281,7 @@ def test_translate_after_change_only_updates_changed_file(
 
     with patch("repo_translator.config.DEFAULT_CONFIG_PATH", config_path), \
          patch("repo_translator.cache_manager.DEFAULT_CACHE_PATH", cache_path), \
+         patch("repo_translator.usage_manager.DEFAULT_USAGE_PATH", usage_path), \
          patch("repo_translator.sync.create_translator") as mock_factory2:
         mock_factory2.return_value.translate_file.side_effect = (
             _make_fake_translate_file()
@@ -320,6 +332,7 @@ def test_list_shows_synced_status_after_add(
     """After a successful `add` + initial sync, `list` reports a real timestamp."""
     repo_dir = _build_source_repo(tmp_path)
     config_path, cache_path = _setup_temp_paths(tmp_path)
+    usage_path = _usage_path_for(cache_path)
     output_dir = tmp_path / "output"
 
     from repo_translator.config import AppConfig, OutputConfig, save_config
@@ -328,6 +341,7 @@ def test_list_shows_synced_status_after_add(
 
     with patch("repo_translator.config.DEFAULT_CONFIG_PATH", config_path), \
          patch("repo_translator.cache_manager.DEFAULT_CACHE_PATH", cache_path), \
+         patch("repo_translator.usage_manager.DEFAULT_USAGE_PATH", usage_path), \
          patch("repo_translator.sync.create_translator") as mock_factory:
         mock_factory.return_value.translate_file.side_effect = (
             _make_fake_translate_file()

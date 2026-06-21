@@ -57,6 +57,12 @@ def _setup_temp_paths(tmp_path: Path) -> tuple[Path, Path]:
     return config_dir / "config.yaml", config_dir / "cache.json"
 
 
+def _usage_path_for(cache_path: Path) -> Path:
+    """Derive a usage.json path alongside an already-created cache_path's
+    directory (avoids every call site needing its own tmp_path plumbing)."""
+    return cache_path.parent / "usage.json"
+
+
 # ---------------------------------------------------------------------------
 # add url
 # ---------------------------------------------------------------------------
@@ -65,9 +71,11 @@ def _setup_temp_paths(tmp_path: Path) -> tuple[Path, Path]:
 def test_add_url_clones_and_syncs(tmp_path: Path, runner: CliRunner) -> None:
     """Adding a URL repo clones it, creates a RepoConfig with url, and runs sync."""
     config_path, cache_path = _setup_temp_paths(tmp_path)
+    usage_path = _usage_path_for(cache_path)
 
     with patch("repo_translator.config.DEFAULT_CONFIG_PATH", config_path), \
          patch("repo_translator.cache_manager.DEFAULT_CACHE_PATH", cache_path), \
+         patch("repo_translator.usage_manager.DEFAULT_USAGE_PATH", usage_path), \
          patch("repo_translator.cli.git_manager.clone") as mock_clone, \
          patch("repo_translator.cli.git_manager.get_file_blob_map",
                return_value=_fake_blob_map(["README.md", "docs/guide.md"])), \
@@ -75,7 +83,7 @@ def test_add_url_clones_and_syncs(tmp_path: Path, runner: CliRunner) -> None:
          patch("repo_translator.cli.cache_manager.save") as mock_cache_save:
 
         # sync_repo should update the cache.
-        def _fake_sync(repo_config, app_config, cache):
+        def _fake_sync(repo_config, app_config, cache, **kwargs):
             cache.setdefault(repo_config.name, {})["README.md"] = {
                 "blob_hash": "abc123hash",
                 "translated_at": "2026-01-01T00:00:00Z",
@@ -124,9 +132,11 @@ def test_add_url_clones_and_syncs(tmp_path: Path, runner: CliRunner) -> None:
 def test_add_url_custom_name(tmp_path: Path, runner: CliRunner) -> None:
     """--name overrides the inferred repo name from the URL."""
     config_path, cache_path = _setup_temp_paths(tmp_path)
+    usage_path = _usage_path_for(cache_path)
 
     with patch("repo_translator.config.DEFAULT_CONFIG_PATH", config_path), \
          patch("repo_translator.cache_manager.DEFAULT_CACHE_PATH", cache_path), \
+         patch("repo_translator.usage_manager.DEFAULT_USAGE_PATH", usage_path), \
          patch("repo_translator.cli.git_manager.clone"), \
          patch("repo_translator.cli.git_manager.get_file_blob_map",
                return_value=_fake_blob_map(["README.md"])), \
@@ -157,9 +167,11 @@ def test_add_local_path_creates_path_entry(tmp_path: Path, runner: CliRunner) ->
     _init_git_repo(git_repo, {"README.md": "# Hello\n"})
 
     config_path, cache_path = _setup_temp_paths(tmp_path)
+    usage_path = _usage_path_for(cache_path)
 
     with patch("repo_translator.config.DEFAULT_CONFIG_PATH", config_path), \
          patch("repo_translator.cache_manager.DEFAULT_CACHE_PATH", cache_path), \
+         patch("repo_translator.usage_manager.DEFAULT_USAGE_PATH", usage_path), \
          patch("repo_translator.cli.git_manager.clone") as mock_clone, \
          patch("repo_translator.cli.sync.sync_repo"), \
          patch("repo_translator.cli.cache_manager.save"):
@@ -227,6 +239,7 @@ def test_translate_existing_repo_calls_sync(
 ) -> None:
     """translate <name> loads config, calls sync_repo, and saves cache."""
     config_path, cache_path = _setup_temp_paths(tmp_path)
+    usage_path = _usage_path_for(cache_path)
 
     config = AppConfig(
         repos=[
@@ -240,6 +253,7 @@ def test_translate_existing_repo_calls_sync(
 
     with patch("repo_translator.config.DEFAULT_CONFIG_PATH", config_path), \
          patch("repo_translator.cache_manager.DEFAULT_CACHE_PATH", cache_path), \
+         patch("repo_translator.usage_manager.DEFAULT_USAGE_PATH", usage_path), \
          patch("repo_translator.cli.git_manager.clone_or_pull",
                return_value=tmp_path / "repos" / "myrepo") as mock_cp, \
          patch("repo_translator.cli.git_manager.get_file_blob_map",
@@ -251,7 +265,7 @@ def test_translate_existing_repo_calls_sync(
          patch("repo_translator.cli.sync.sync_repo") as mock_sync, \
          patch("repo_translator.cli.cache_manager.save") as mock_cache_save:
 
-        def _fake_sync(repo_config, app_config, cache):
+        def _fake_sync(repo_config, app_config, cache, **kwargs):
             cache.setdefault("myrepo", {})["README.md"] = {
                 "blob_hash": "abc", "translated_at": "now"
             }

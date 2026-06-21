@@ -92,27 +92,39 @@ def test_run_watch_with_no_repos_registers_no_jobs() -> None:
 
 def test_job_calls_sync_repo_and_saves_cache(tmp_path: Path) -> None:
     cache_path = tmp_path / "cache.json"
+    usage_path = tmp_path / "usage.json"
     app_config = _make_app_config(1)
 
     fake_cache = {"loaded": True}
     updated_cache = {"loaded": True, "synced": True}
+    fake_usage = {"daily": {}, "repos": {}}
 
     with patch(
         "repo_translator.scheduler.DEFAULT_CACHE_PATH", cache_path
     ), patch(
+        "repo_translator.scheduler.DEFAULT_USAGE_PATH", usage_path
+    ), patch(
         "repo_translator.scheduler.cache_manager.load", return_value=fake_cache
     ) as mock_load, patch(
+        "repo_translator.scheduler.usage_manager.load", return_value=fake_usage
+    ) as mock_usage_load, patch(
         "repo_translator.scheduler.sync.sync_repo", return_value=updated_cache
     ) as mock_sync, patch(
         "repo_translator.scheduler.cache_manager.save"
-    ) as mock_save:
+    ) as mock_save, patch(
+        "repo_translator.scheduler.usage_manager.save"
+    ) as mock_usage_save:
         jobs = _captured_jobs(app_config)
         assert len(jobs) == 1
         jobs[0].func()
 
     mock_load.assert_called_once_with(cache_path)
-    mock_sync.assert_called_once_with(app_config.repos[0], app_config, fake_cache)
+    mock_usage_load.assert_called_once_with(usage_path)
+    mock_sync.assert_called_once_with(
+        app_config.repos[0], app_config, fake_cache, usage=fake_usage
+    )
     mock_save.assert_called_once_with(cache_path, updated_cache)
+    mock_usage_save.assert_called_once_with(usage_path, fake_usage)
 
 
 def test_one_job_exception_does_not_prevent_other_jobs_from_running() -> None:
@@ -121,14 +133,16 @@ def test_one_job_exception_does_not_prevent_other_jobs_from_running() -> None:
 
     calls: list[str] = []
 
-    def _fake_sync_repo(repo_config, app_cfg, cache):
+    def _fake_sync_repo(repo_config, app_cfg, cache, **kwargs):
         calls.append(repo_config.name)
         if repo_config.name == "repo1":
             raise RuntimeError("simulated sync failure")
         return cache
 
     with patch("repo_translator.scheduler.cache_manager.load", return_value={}), \
+         patch("repo_translator.scheduler.usage_manager.load", return_value={}), \
          patch("repo_translator.scheduler.cache_manager.save"), \
+         patch("repo_translator.scheduler.usage_manager.save"), \
          patch("repo_translator.scheduler.sync.sync_repo", side_effect=_fake_sync_repo):
         jobs = _captured_jobs(app_config)
         assert len(jobs) == 3
@@ -141,11 +155,15 @@ def test_one_job_exception_does_not_prevent_other_jobs_from_running() -> None:
     assert sorted(calls) == ["repo0", "repo1", "repo2"]
 
 
-def test_job_exception_is_logged_not_raised(caplog: pytest.LogCaptureFixture) -> None:
+def test_job_exception_is_logged_not_raised(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     app_config = _make_app_config(1)
 
     with patch("repo_translator.scheduler.cache_manager.load", return_value={}), \
+         patch("repo_translator.scheduler.usage_manager.load", return_value={}), \
          patch("repo_translator.scheduler.cache_manager.save"), \
+         patch("repo_translator.scheduler.usage_manager.save"), \
          patch(
              "repo_translator.scheduler.sync.sync_repo",
              side_effect=RuntimeError("boom"),

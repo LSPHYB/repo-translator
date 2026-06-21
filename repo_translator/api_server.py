@@ -17,7 +17,7 @@ import queue
 import socket
 import threading
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import click
@@ -27,7 +27,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from repo_translator import cache_manager, git_manager, sync
+from repo_translator import cache_manager, git_manager, sync, usage_manager
 from repo_translator import scheduler as scheduler_module
 from repo_translator.cli import _find_repo_by_name, _infer_repo_name, _is_git_repo, _is_url
 from repo_translator.sync import _is_excluded
@@ -419,9 +419,11 @@ def sync_repo_endpoint(name: str) -> dict:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     cache = cache_manager.load(cache_manager.DEFAULT_CACHE_PATH)
+    usage = usage_manager.load(usage_manager.DEFAULT_USAGE_PATH)
     before = len(cache.get(name, {}))
-    cache = sync.sync_repo(repo_config, cfg, cache)
+    cache = sync.sync_repo(repo_config, cfg, cache, usage=usage)
     cache_manager.save(cache_manager.DEFAULT_CACHE_PATH, cache)
+    usage_manager.save(usage_manager.DEFAULT_USAGE_PATH, usage)
     after = len(cache.get(name, {}))
     return {"name": name, "files_succeeded": after - before}
 
@@ -435,8 +437,10 @@ def sync_file_endpoint(name: str, path: str) -> dict:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     cache = cache_manager.load(cache_manager.DEFAULT_CACHE_PATH)
-    cache = sync.sync_repo(repo_config, cfg, cache, only_files=[path])
+    usage = usage_manager.load(usage_manager.DEFAULT_USAGE_PATH)
+    cache = sync.sync_repo(repo_config, cfg, cache, only_files=[path], usage=usage)
     cache_manager.save(cache_manager.DEFAULT_CACHE_PATH, cache)
+    usage_manager.save(usage_manager.DEFAULT_USAGE_PATH, usage)
 
     succeeded = path in cache.get(name, {})
     if not succeeded:
@@ -461,10 +465,12 @@ def sync_all_endpoint() -> dict:
     try:
         cfg = load_config()
         cache = cache_manager.load(cache_manager.DEFAULT_CACHE_PATH)
+        usage = usage_manager.load(usage_manager.DEFAULT_USAGE_PATH)
         cache = sync.sync_all(
-            cfg, cache, should_cancel=_sync_all_cancel_event.is_set
+            cfg, cache, should_cancel=_sync_all_cancel_event.is_set, usage=usage
         )
         cache_manager.save(cache_manager.DEFAULT_CACHE_PATH, cache)
+        usage_manager.save(usage_manager.DEFAULT_USAGE_PATH, usage)
         return {
             "repos_processed": len(cfg.repos),
             "cancelled": _sync_all_cancel_event.is_set(),
@@ -478,6 +484,111 @@ def sync_all_endpoint() -> dict:
 def cancel_sync_all() -> dict:
     _sync_all_cancel_event.set()
     return {"cancelled": True}
+
+
+def _cost_usd(engine: str, prompt_tokens: int, completion_tokens: int) -> float:
+    """Estimate USD cost from `usage_manager.PRICING_USD_PER_1K_TOKENS`.
+    Unknown/future engine names fall back to (0.0, 0.0) -- cost shows as
+    $0, never crashes (see that table's comment for the pricing caveats).
+    """
+    prompt_rate, completion_rate = usage_manager.PRICING_USD_PER_1K_TOKENS.get(
+        engine, (0.0, 0.0)
+    )
+    return (prompt_tokens / 1000) * prompt_rate + (completion_tokens / 1000) * completion_rate
+
+
+@app.get("/usage")
+def get_usage() -> dict:
+    """Aggregated token-usage/cost stats for the desktop UsageScreen.
+
+    Backend does all aggregation (daily window, per-engine/per-repo totals,
+    cost estimation) so the frontend stays dumb, consistent with
+    `/repos/{name}/files`'s existing precedent. `daily` is always exactly 30
+    entries (oldest first, ending today UTC), zero-filled for days with no
+    recorded usage -- there is no range selector; see Task 9's design note
+    for why a `7d`/`30d`/`all` selector was dropped from the frontend.
+    """
+    usage = usage_manager.load(usage_manager.DEFAULT_USAGE_PATH)
+    daily_raw = usage.get("daily", {})
+    repos_raw = usage.get("repos", {})
+
+    today = datetime.now(timezone.utc).date()
+    daily: list[dict] = []
+    for offset in range(29, -1, -1):
+        day = (today - timedelta(days=offset)).isoformat()
+        day_bucket = daily_raw.get(day, {})
+        prompt_tokens = sum(e["prompt_tokens"] for e in day_bucket.values())
+        completion_tokens = sum(e["completion_tokens"] for e in day_bucket.values())
+        daily.append(
+            {
+                "date": day,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": prompt_tokens + completion_tokens,
+            }
+        )
+
+    # by_engine: all-time totals per engine, aggregated across every
+    # recorded day (not just the last 30) -- mirrors `repos` below, which is
+    # likewise all-time, not windowed to the 30-day daily chart.
+    by_engine_totals: dict[str, dict[str, int]] = {}
+    for day_bucket in daily_raw.values():
+        for engine, counts in day_bucket.items():
+            acc = by_engine_totals.setdefault(
+                engine, {"prompt_tokens": 0, "completion_tokens": 0, "files": 0}
+            )
+            acc["prompt_tokens"] += counts["prompt_tokens"]
+            acc["completion_tokens"] += counts["completion_tokens"]
+            acc["files"] += counts["files"]
+
+    by_engine = []
+    for engine, counts in sorted(by_engine_totals.items()):
+        by_engine.append(
+            {
+                "engine": engine,
+                "prompt_tokens": counts["prompt_tokens"],
+                "completion_tokens": counts["completion_tokens"],
+                "total_tokens": counts["prompt_tokens"] + counts["completion_tokens"],
+                "cost_usd": _cost_usd(
+                    engine, counts["prompt_tokens"], counts["completion_tokens"]
+                ),
+            }
+        )
+
+    by_repo = []
+    for repo_name, engines in sorted(repos_raw.items()):
+        prompt_tokens = sum(e["prompt_tokens"] for e in engines.values())
+        completion_tokens = sum(e["completion_tokens"] for e in engines.values())
+        files = sum(e["files"] for e in engines.values())
+        cost_usd = sum(
+            _cost_usd(engine, e["prompt_tokens"], e["completion_tokens"])
+            for engine, e in engines.items()
+        )
+        by_repo.append(
+            {
+                "repo": repo_name,
+                "files": files,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": prompt_tokens + completion_tokens,
+                "cost_usd": cost_usd,
+            }
+        )
+
+    totals = {
+        "prompt_tokens": sum(e["prompt_tokens"] for e in by_engine),
+        "completion_tokens": sum(e["completion_tokens"] for e in by_engine),
+        "total_tokens": sum(e["total_tokens"] for e in by_engine),
+        "cost_usd": sum(e["cost_usd"] for e in by_engine),
+        "files": sum(counts["files"] for counts in by_engine_totals.values()),
+    }
+
+    return {
+        "daily": daily,
+        "by_engine": by_engine,
+        "by_repo": by_repo,
+        "totals": totals,
+    }
 
 
 @app.websocket("/logs")

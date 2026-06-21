@@ -354,6 +354,27 @@
           }
         }
       }
+    },
+    "/usage": {
+      "get": {
+        "summary": "Get Usage",
+        "description": "Aggregated token-usage/cost stats for the desktop UsageScreen.\n\nBackend does all aggregation (daily window, per-engine/per-repo totals,\ncost estimation) so the frontend stays dumb, consistent with\n`/repos/{name}/files`'s existing precedent. `daily` is always exactly 30\nentries (oldest first, ending today UTC), zero-filled for days with no\nrecorded usage -- there is no range selector; see Task 9's design note\nfor why a `7d`/`30d`/`all` selector was dropped from the frontend.",
+        "operationId": "get_usage_usage_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Get Usage Usage Get"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -569,5 +590,44 @@
     },
     "example_line": "{\"time\": \"2026-06-20T14:32:01.123456+00:00\", \"level\": \"INFO\", \"logger\": \"repo_translator.sync\", \"message\": \"Synced 3 files for repo 'example-repo'\"} -- plain log line, no event/path/error keys.\n{\"time\": \"2026-06-21T10:00:00.000000+00:00\", \"level\": \"WARNING\", \"logger\": \"repo_translator.sync\", \"message\": \"Translation failed for 'docs/guide.md': timeout\", \"event\": \"file_failed\", \"path\": \"docs/guide.md\", \"error\": \"timeout\"} -- per-file event line, additive fields present.",
     "source_reference": "repo_translator/api_server.py, class _LogBroadcastHandler, method emit (as of commit at time of this snapshot). Verify against current source if this file appears stale -- see Step 3 staleness note in docs/superpowers/plans/2026-06-20-desktop-frontend.md Task 0.5."
+  },
+  "x-usage-response-shape": {
+    "_comment": "Hand-documented because /usage (like /health, /config, /repos, etc.) returns a plain dict, so FastAPI/OpenAPI only ever generates a generic additionalProperties:true object schema for it -- the field names below are NOT visible in paths['/usage'] above. This section exists because Task 9 of docs/superpowers/plans/2026-06-20-desktop-frontend.md added real persistent token-usage tracking (repo_translator/usage_manager.py, usage.json) and this new GET /usage endpoint that aggregates it for the desktop UsageScreen. Read directly from repo_translator/api_server.py's get_usage()/_cost_usd() and repo_translator/usage_manager.py's PRICING_USD_PER_1K_TOKENS table, confirmed by live curl against a scratch-REPO_TRANSLATOR_HOME instance, not guessed.",
+    "route": "GET /usage",
+    "example_response": {
+      "daily": [
+        {"date": "2026-05-23", "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        {"date": "2026-06-21", "prompt_tokens": 1500, "completion_tokens": 750, "total_tokens": 2250}
+      ],
+      "by_engine": [
+        {"engine": "claude", "prompt_tokens": 200, "completion_tokens": 100, "total_tokens": 300, "cost_usd": 0.0021},
+        {"engine": "deepseek", "prompt_tokens": 1300, "completion_tokens": 650, "total_tokens": 1950, "cost_usd": 0.0010715}
+      ],
+      "by_repo": [
+        {"repo": "langchain", "files": 2, "prompt_tokens": 1200, "completion_tokens": 600, "total_tokens": 1800, "cost_usd": 0.001824},
+        {"repo": "other-repo", "files": 1, "prompt_tokens": 300, "completion_tokens": 150, "total_tokens": 450, "cost_usd": 0.0002475}
+      ],
+      "totals": {"prompt_tokens": 1500, "completion_tokens": 750, "total_tokens": 2250, "cost_usd": 0.0031715, "files": 3}
+    },
+    "fields": {
+      "daily": {
+        "type": "array",
+        "notes": "Always exactly 30 entries, oldest first, ending today (UTC calendar date). Zero-filled for any day with no recorded usage -- there is no range selector on this endpoint; it is always this fixed 30-day window. Aggregates across all engines and repos for each day (does not break down by engine/repo per day)."
+      },
+      "by_engine": {
+        "type": "array",
+        "notes": "All-time totals (NOT limited to the 30-day `daily` window) per engine that has ever been recorded in usage.json, sorted by engine name. `cost_usd` is computed at read time from usage_manager.PRICING_USD_PER_1K_TOKENS -- an engine name not present in that table (e.g. a future/unknown engine) falls back to (0.0, 0.0), so cost_usd is 0.0 rather than raising."
+      },
+      "by_repo": {
+        "type": "array",
+        "notes": "All-time totals per repo (summed across every engine that repo has ever used), sorted by repo name. `files` is the count of successfully-billed translate_file calls recorded for that repo (see usage_manager.record()'s 'files' counter) -- recorded regardless of whether the file's sync ultimately succeeded, since a write failure after a successful LLM call still consumed billed tokens."
+      },
+      "totals": {
+        "type": "object",
+        "notes": "Grand totals across every engine (equivalently, every repo) -- prompt_tokens/completion_tokens/total_tokens/cost_usd/files. cost_usd is the sum of each by_engine entry's cost_usd, not recomputed independently."
+      }
+    },
+    "pricing_caveat": "cost_usd values are derived from a small hardcoded, clearly-commented-as-approximate USD-per-1000-token pricing table in usage_manager.py (PRICING_USD_PER_1K_TOKENS), captured as a point-in-time public list-price estimate for each engine's default translator model. These WILL drift from real provider pricing over time -- this is a rough cost estimate for the desktop UI, not a billing-accurate figure.",
+    "source_reference": "repo_translator/api_server.py (get_usage(), _cost_usd()) and repo_translator/usage_manager.py (record(), load(), save(), PRICING_USD_PER_1K_TOKENS), as of Task 9 of docs/superpowers/plans/2026-06-20-desktop-frontend.md. Verify against current source if this file appears stale."
   }
 }
