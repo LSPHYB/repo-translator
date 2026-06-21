@@ -467,13 +467,14 @@
     "source_reference": "repo_translator/api_server.py, health() function (as of commit at time of this snapshot). Verify against current source if this file appears stale."
   },
   "x-config-response-shape": {
-    "_comment": "Hand-documented because /config (like /health, /repos, etc.) returns a plain dict, so FastAPI/OpenAPI only ever generates a generic additionalProperties:true object schema for it -- the field names below are NOT visible in paths['/config'] above. This section exists because Task 6 of docs/superpowers/plans/2026-06-20-desktop-frontend.md added an optimistic-concurrency `revision` field to AppConfig. Read directly from repo_translator/config.py's AppConfig model and repo_translator/api_server.py's get_config()/put_config() functions (captured at Task 6 time) and confirmed by live curl against a scratch-REPO_TRANSLATOR_HOME instance, not guessed.",
+    "_comment": "Hand-documented because /config (like /health, /repos, etc.) returns a plain dict, so FastAPI/OpenAPI only ever generates a generic additionalProperties:true object schema for it -- the field names below are NOT visible in paths['/config'] above. This section exists because Task 6 of docs/superpowers/plans/2026-06-20-desktop-frontend.md added an optimistic-concurrency `revision` field to AppConfig, and Task 7 changed translator.api_key's exposure to a boolean api_key_set (see x-config-api-key-write-semantics below). Read directly from repo_translator/config.py's AppConfig model and repo_translator/api_server.py's get_config()/put_config()/_serialize_config() functions and confirmed by live curl against a scratch-REPO_TRANSLATOR_HOME instance, not guessed.",
     "route": "GET /config, PUT /config",
     "example_response": {
       "translator": {
         "engine": "deepseek",
         "max_tokens": 4096,
-        "temperature": 0.3
+        "temperature": 0.3,
+        "api_key_set": false
       },
       "sync": {
         "interval_hours": 6,
@@ -495,6 +496,27 @@
       }
     },
     "source_reference": "repo_translator/config.py (AppConfig.revision, save_config()) and repo_translator/api_server.py (get_config(), put_config()), as of Task 6 of docs/superpowers/plans/2026-06-20-desktop-frontend.md. Verify against current source if this file appears stale."
+  },
+  "x-config-api-key-write-semantics": {
+    "_comment": "Hand-documented for the same reason as x-config-response-shape (plain-dict route, OpenAPI gives no field-level schema). Task 7 of docs/superpowers/plans/2026-06-20-desktop-frontend.md changed translator.api_key's exposure: the GET /config response (and PUT's response, since put_config() returns the same _serialize_config() shape) NEVER includes the literal api_key value -- it is replaced by a boolean api_key_set. This is a breaking response-shape change from the prior snapshot (which showed translator.api_key directly, e.g. omitted via exclude_none when null). Read directly from repo_translator/api_server.py's _serialize_config()/get_config()/put_config() (as of Task 7) and confirmed by live curl against a scratch-REPO_TRANSLATOR_HOME instance.",
+    "route": "GET /config, PUT /config",
+    "read_semantics": "GET /config's translator object never contains the key 'api_key' at all (not present, not null, not empty string) -- only 'api_key_set': true|false, reflecting bool(stored_api_key).",
+    "write_semantics": {
+      "omitted_or_null": "payload.translator.api_key absent, or present with value null -- the stored key is left unchanged. This is how SettingsScreen saves every other field without forcing the user to re-paste an already-configured key. Implementation note: put_config() resolves this BEFORE Pydantic validation by substituting the previously-loaded current.translator.api_key into the payload.",
+      "empty_string": "payload.translator.api_key == \"\" -- explicitly clears the stored key. Normalized server-side to None after validation (so api_key_set becomes false and the on-disk YAML omits the key entirely, same as a never-configured key) -- empty-string and unset are treated as the identical state, never stored as a literal \"\".",
+      "non_empty_string": "payload.translator.api_key == \"<value>\" -- sets/replaces the stored key with that literal value."
+    },
+    "frontend_round_trip_note": "Because GET returns api_key_set (not api_key), and the frontend constructs its PUT body by spreading the last-fetched config object, every PUT naturally round-trips an 'api_key_set' key inside translator. This is harmless: AppConfig/TranslatorConfig are plain pydantic BaseModel subclasses with no ConfigDict(extra=...) override anywhere in config.py, so Pydantic v2's default extra='ignore' silently drops the unrecognized 'api_key_set' field during AppConfig.model_validate(payload) -- no explicit stripping needed server-side.",
+    "example_put_preserve_existing_key": {
+      "translator": { "engine": "deepseek", "api_key_set": true }
+    },
+    "example_put_clear_key": {
+      "translator": { "engine": "deepseek", "api_key": "" }
+    },
+    "example_put_set_new_key": {
+      "translator": { "engine": "deepseek", "api_key": "sk-new-key-value" }
+    },
+    "source_reference": "repo_translator/api_server.py (_serialize_config(), get_config(), put_config()) and repo_translator/config.py (TranslatorConfig.api_key, no ConfigDict override present), as of Task 7 of docs/superpowers/plans/2026-06-20-desktop-frontend.md. Verify against current source if this file appears stale."
   },
   "x-ws-logs-contract": {
     "_comment": "Hand-documented because OpenAPI/Swagger has no schema coverage for WebSocket payloads. This route (WS /logs) is absent from the 'paths' object above for that reason -- FastAPI's openapi.json generation does not include @app.websocket routes at all. The shape below was read directly from repo_translator/api_server.py's _LogBroadcastHandler.emit method (captured 2026-06-20, re-verified unchanged on re-capture triggered by /health schema change; re-verified again 2026-06-21 when the GET /repos/{name}/files endpoint was added and the event/path/error optional fields below were introduced), not inferred or guessed.",
