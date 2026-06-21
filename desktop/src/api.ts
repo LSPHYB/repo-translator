@@ -323,6 +323,14 @@ export interface LogMessage {
   level: "DEBUG" | "INFO" | "WARNING" | "ERROR" | "CRITICAL";
   logger: string;
   message: string;
+  // Structured per-file event fields (see `_LogBroadcastHandler.emit` and
+  // sync.py's `_process_one_file` logger calls). Present together on
+  // "file_start" | "file_translated" | "file_failed" event lines (`path`
+  // always, `error` only for "file_failed"); all three absent on a plain
+  // log line that doesn't carry an `event`.
+  event?: string;
+  path?: string;
+  error?: string;
 }
 
 /**

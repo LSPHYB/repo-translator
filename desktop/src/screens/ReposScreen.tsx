@@ -191,8 +191,7 @@ export default function ReposScreen() {
   useEffect(() => {
     if (!selected) return undefined;
     const ws = api.connectLogs((log: LogMessage) => {
-      const event = (log as LogMessage & { event?: string; path?: string; error?: string }).event;
-      const path = (log as LogMessage & { event?: string; path?: string; error?: string }).path;
+      const { event, path } = log;
       if (!event || !path) return;
       // Events arrive for whichever repo is syncing; since file paths are
       // repo-relative and not globally unique, only apply the overlay if a
@@ -206,8 +205,7 @@ export default function ReposScreen() {
             return { ...f, status: 'synced', error: null, lastSync: new Date().toISOString() };
           }
           if (event === 'file_failed') {
-            const errMsg = (log as LogMessage & { error?: string }).error ?? null;
-            return { ...f, status: 'error', error: errMsg };
+            return { ...f, status: 'error', error: log.error ?? null };
           }
           return f;
         });

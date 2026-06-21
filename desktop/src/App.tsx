@@ -16,7 +16,7 @@ import ReposScreen from './screens/ReposScreen';
 import GlossaryScreen from './screens/GlossaryScreen';
 import SettingsScreen from './screens/SettingsScreen';
 import PlaceholderScreen from './screens/PlaceholderScreen';
-import ConsoleDrawerPlaceholder from './screens/ConsoleDrawerPlaceholder';
+import ConsoleScreen, { ConsoleDrawer } from './screens/ConsoleScreen';
 
 export type Theme = 'light' | 'dark';
 
@@ -44,7 +44,7 @@ function App() {
     glossary: <GlossaryScreen />,
     usage: <PlaceholderScreen title={SCREEN_TITLES.usage} />,
     settings: <SettingsScreen />,
-    logs: <PlaceholderScreen title={SCREEN_TITLES.logs} />,
+    logs: <ConsoleScreen />,
   };
 
   return (
@@ -55,7 +55,7 @@ function App() {
       onTheme={setTheme}
       logsOpen={logsOpen}
       onToggleLogs={() => setLogsOpen((o) => !o)}
-      consoleNode={<ConsoleDrawerPlaceholder />}
+      consoleNode={<ConsoleDrawer />}
     >
       {screens[page]}
     </AppShell>
