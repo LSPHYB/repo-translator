@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
 
-from repo_translator import api_server
+from repo_translator import api_server, cache_manager
 from repo_translator.api_server import app
 from repo_translator.config import AppConfig, OutputConfig, save_config
 
@@ -164,6 +164,43 @@ def test_list_repos_empty(tmp_path: Path) -> None:
     assert resp.json() == []
 
 
+def test_list_repos_file_count_excludes_error_only_records(tmp_path: Path) -> None:
+    """A file that has only ever failed (error-only cache record, no
+    translated_at) must not inflate file_count -- it has never been
+    genuinely translated. Regression test for the post-record_error fix to
+    list_repos()."""
+    repo_dir = tmp_path / "my-project"
+    _init_git_repo(repo_dir, {"README.md": "# Hi\n", "docs/guide.md": "## G\n"})
+
+    with _patch_config_path(tmp_path):
+        client = TestClient(app)
+        client.post("/repos", json={"url_or_path": str(repo_dir)})
+
+        cache_path = tmp_path / ".repo-translator" / "cache.json"
+        cache_manager.save(
+            cache_path,
+            {
+                "my-project": {
+                    "README.md": {
+                        "blob_hash": "abc123",
+                        "translated_at": "2026-06-21T10:00:00Z",
+                    },
+                    "docs/guide.md": {
+                        "last_error": {
+                            "message": "boom",
+                            "occurred_at": "2026-06-21T10:00:00Z",
+                        }
+                    },
+                }
+            },
+        )
+
+        listed = client.get("/repos").json()
+
+    assert len(listed) == 1
+    assert listed[0]["file_count"] == 1
+
+
 def test_add_external_repo(tmp_path: Path) -> None:
     repo_dir = tmp_path / "my-project"
     _init_git_repo(repo_dir, {"README.md": "# Hi\n"})
@@ -300,6 +337,116 @@ def test_sync_file_endpoint_404_for_unknown_repo(tmp_path: Path) -> None:
     assert resp.status_code == 404
 
 
+def test_list_repo_files_returns_pending_and_synced_status(tmp_path: Path) -> None:
+    repo_dir = tmp_path / "my-project"
+    _init_git_repo(repo_dir, {"README.md": "# Hi\n", "docs/guide.md": "## G\n"})
+
+    mock_translator = MagicMock()
+    mock_translator.translate_file.side_effect = _make_fake_translate_file()
+
+    with _patch_config_path(tmp_path), patch(
+        "repo_translator.sync.create_translator", return_value=mock_translator
+    ):
+        client = TestClient(app)
+        client.post("/repos", json={"url_or_path": str(repo_dir)})
+        # Only sync README.md -- docs/guide.md stays pending.
+        client.post("/repos/my-project/files/README.md/sync")
+
+        resp = client.get("/repos/my-project/files")
+
+    assert resp.status_code == 200
+    by_path = {f["path"]: f for f in resp.json()}
+    assert set(by_path) == {"README.md", "docs/guide.md"}
+    assert by_path["README.md"]["status"] == "synced"
+    assert by_path["README.md"]["last_sync"] is not None
+    assert by_path["README.md"]["error"] is None
+    assert by_path["docs/guide.md"]["status"] == "pending"
+    assert by_path["docs/guide.md"]["last_sync"] is None
+    assert by_path["docs/guide.md"]["error"] is None
+
+
+def test_list_repo_files_reports_error_for_failed_file(tmp_path: Path) -> None:
+    """A file with only an error-only cache record (record_error, never
+    successfully translated) reports status=pending with a non-null error --
+    both true simultaneously, per the resolved design."""
+    repo_dir = tmp_path / "my-project"
+    _init_git_repo(repo_dir, {"docs/guide.md": "## G\n"})
+
+    with _patch_config_path(tmp_path):
+        client = TestClient(app)
+        client.post("/repos", json={"url_or_path": str(repo_dir)})
+
+        cache_path = tmp_path / ".repo-translator" / "cache.json"
+        cache_manager.save(
+            cache_path,
+            {
+                "my-project": {
+                    "docs/guide.md": {
+                        "last_error": {
+                            "message": "boom",
+                            "occurred_at": "2026-06-21T10:00:00Z",
+                        }
+                    }
+                }
+            },
+        )
+
+        resp = client.get("/repos/my-project/files")
+
+    assert resp.status_code == 200
+    files = resp.json()
+    assert len(files) == 1
+    assert files[0]["path"] == "docs/guide.md"
+    assert files[0]["status"] == "pending"
+    assert files[0]["last_sync"] is None
+    assert files[0]["error"] == "boom"
+
+
+def test_list_repo_files_excludes_files_matching_output_exclude(tmp_path: Path) -> None:
+    repo_dir = tmp_path / "my-project"
+    _init_git_repo(
+        repo_dir, {"README.md": "# Hi\n", "CHANGELOG.md": "# Changelog\n"}
+    )
+
+    with _patch_config_path(tmp_path) as config_path:
+        cfg = AppConfig(output=OutputConfig(base_dir=str(tmp_path / "output"), exclude=["CHANGELOG.md"]))
+        save_config(cfg, config_path)
+
+        client = TestClient(app)
+        client.post("/repos", json={"url_or_path": str(repo_dir)})
+
+        resp = client.get("/repos/my-project/files")
+
+    assert resp.status_code == 200
+    paths = {f["path"] for f in resp.json()}
+    assert paths == {"README.md"}
+
+
+def test_list_repo_files_returns_empty_for_never_synced_repo(tmp_path: Path) -> None:
+    """A managed repo that was added but never cloned/synced yet (no local
+    checkout exists) must return [] rather than shelling out to git on a
+    nonexistent path."""
+    with _patch_config_path(tmp_path), patch(
+        "repo_translator.api_server.git_manager.clone"
+    ):
+        client = TestClient(app)
+        client.post(
+            "/repos", json={"url_or_path": "https://example.invalid/repo.git"}
+        )
+
+        resp = client.get("/repos/repo/files")
+
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+def test_list_repo_files_404_for_unknown_repo(tmp_path: Path) -> None:
+    with _patch_config_path(tmp_path):
+        client = TestClient(app)
+        resp = client.get("/repos/does-not-exist/files")
+    assert resp.status_code == 404
+
+
 def test_sync_all_endpoint_processes_every_repo(tmp_path: Path) -> None:
     repo_dirs = []
     for i in range(2):
@@ -425,3 +572,58 @@ def test_logs_ws_receives_log_messages(tmp_path: Path) -> None:
     assert payload["level"] == "WARNING"
     assert payload["logger"] == "repo_translator.sync"
     assert payload["message"] == "test message abc"
+
+
+def test_logs_ws_omits_event_fields_when_absent() -> None:
+    """A plain log call (no `extra=`) must not gain event/path/error keys --
+    confirms the new fields are additive and don't change existing
+    messages' JSON shape."""
+    with TestClient(app) as client:
+        with client.websocket_connect("/logs") as ws:
+            logging.getLogger("repo_translator.sync").warning("plain message")
+            received = ws.receive_text()
+
+    payload = json.loads(received)
+    assert payload["message"] == "plain message"
+    assert "event" not in payload
+    assert "path" not in payload
+    assert "error" not in payload
+
+
+def test_logs_ws_includes_event_fields_when_present_via_extra() -> None:
+    """`extra={"event": ..., "path": ..., "error": ...}` on a LogRecord (as
+    sync.py's per-file log calls now do) is forwarded into the NDJSON
+    payload -- this is the mechanism the desktop frontend's running/error
+    file-status overlay consumes from the WS /logs stream."""
+    with TestClient(app) as client:
+        with client.websocket_connect("/logs") as ws:
+            logging.getLogger("repo_translator.sync").warning(
+                "Translating %r ...",
+                "docs/guide.md",
+                extra={"event": "file_start", "path": "docs/guide.md"},
+            )
+            received = ws.receive_text()
+
+    payload = json.loads(received)
+    assert payload["event"] == "file_start"
+    assert payload["path"] == "docs/guide.md"
+    assert "error" not in payload
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/logs") as ws:
+            logging.getLogger("repo_translator.sync").warning(
+                "Translation failed for %r: %s",
+                "docs/guide.md",
+                "boom",
+                extra={
+                    "event": "file_failed",
+                    "path": "docs/guide.md",
+                    "error": "boom",
+                },
+            )
+            received = ws.receive_text()
+
+    payload = json.loads(received)
+    assert payload["event"] == "file_failed"
+    assert payload["path"] == "docs/guide.md"
+    assert payload["error"] == "boom"

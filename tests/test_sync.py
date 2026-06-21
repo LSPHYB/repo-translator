@@ -403,7 +403,9 @@ def test_sync_clone_or_pull_git_operation_error_returns_original_cache(
 
 def test_sync_oserror_on_write_isolates_failure(tmp_path: Path) -> None:
     """When one file write raises OSError, other files still succeed, and
-    the failed file is NOT recorded in cache."""
+    the failed file gets an error-only cache record (no blob_hash/
+    translated_at -- it has never successfully translated), so it still
+    counts as 'changed' on the next sync."""
     repo_dir = tmp_path / "src-repo"
     _init_repo_with_files(
         repo_dir,
@@ -459,8 +461,13 @@ def test_sync_oserror_on_write_isolates_failure(tmp_path: Path) -> None:
     assert (output_repo / "api/reference.md").exists()
     assert (output_repo / "api/reference_zh.md").exists()
 
-    # failed file: cache should NOT contain docs/guide.md
-    assert "docs/guide.md" not in result_cache.get("test-repo", {})
+    # failed file: gets an error-only record (no blob_hash/translated_at --
+    # never successfully translated), not the literal absence of a key.
+    repo_cache = result_cache.get("test-repo", {})
+    assert "docs/guide.md" in repo_cache
+    assert "blob_hash" not in repo_cache["docs/guide.md"]
+    assert "translated_at" not in repo_cache["docs/guide.md"]
+    assert "last_error" in repo_cache["docs/guide.md"]
 
     # successful files should be in cache
     assert "README.md" in result_cache.get("test-repo", {})
@@ -470,8 +477,9 @@ def test_sync_oserror_on_write_isolates_failure(tmp_path: Path) -> None:
 def test_sync_oserror_on_write_does_not_affect_cache_for_successful(
     tmp_path: Path,
 ) -> None:
-    """Cache records for successfully written files are preserved; only
-    the failed file is absent from cache."""
+    """Cache records for successfully written files are preserved; the
+    failed file gets an error-only record (no blob_hash), distinct from a
+    successful record."""
     repo_dir = tmp_path / "src-repo"
     _init_repo_with_files(
         repo_dir,
@@ -502,15 +510,81 @@ def test_sync_oserror_on_write_does_not_affect_cache_for_successful(
     ), patch.object(Path, "write_text", _failing_write_text):
         result_cache = sync_repo(repo_config, app_config, {})
 
-    # b.md should succeed and be in cache; a.md should not
+    # b.md should succeed with a full record; a.md gets an error-only record
+    # (present in the cache, but with no blob_hash -- never succeeded).
     repo_cache = result_cache.get("test-repo", {})
-    assert "a.md" not in repo_cache
+    assert "a.md" in repo_cache
+    assert "blob_hash" not in repo_cache["a.md"]
+    assert "last_error" in repo_cache["a.md"]
     assert "b.md" in repo_cache
     assert "blob_hash" in repo_cache["b.md"]
 
     # b.md output should exist on disk
     assert (output_dir / "test-repo" / "b.md").exists()
     assert (output_dir / "test-repo" / "b_zh.md").exists()
+
+
+# ---------------------------------------------------------------------------
+# Test: structured `event`/`path`/`error` extra fields on log records
+# ---------------------------------------------------------------------------
+
+
+def test_sync_logs_carry_structured_event_fields(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """file_start/file_translated/file_failed events are attached via
+    `extra=` so api_server.py's WS /logs broadcaster (and the desktop
+    frontend's running/error overlay) can read them off the LogRecord."""
+    repo_dir = tmp_path / "src-repo"
+    _init_repo_with_files(
+        repo_dir,
+        {
+            "ok.md": "# OK\n",
+            "fail.md": "# Will Fail\n",
+        },
+    )
+
+    output_dir = tmp_path / "output"
+    app_config = _make_app_config(base_dir=output_dir, concurrency=1)
+    repo_config = RepoConfig(name="test-repo", path=str(repo_dir))
+
+    def _selective_fail(marked_source, glossary):
+        if "Will Fail" in marked_source:
+            raise RuntimeError("Simulated translation failure")
+        return _make_fake_translate_file()(marked_source, glossary)
+
+    mock_translator = MagicMock()
+    mock_translator.translate_file.side_effect = _selective_fail
+
+    with caplog.at_level("INFO", logger="repo_translator.sync"):
+        with patch(
+            "repo_translator.sync.create_translator", return_value=mock_translator
+        ):
+            sync_repo(repo_config, app_config, {})
+
+    records_by_path: dict[str, list] = {"ok.md": [], "fail.md": []}
+    for record in caplog.records:
+        path = getattr(record, "path", None)
+        if path in records_by_path:
+            records_by_path[path].append(record)
+
+    ok_events = [r.event for r in records_by_path["ok.md"] if hasattr(r, "event")]
+    assert ok_events == ["file_start", "file_translated"]
+
+    fail_events = [r.event for r in records_by_path["fail.md"] if hasattr(r, "event")]
+    assert fail_events == ["file_start", "file_failed"]
+
+    fail_record = next(
+        r for r in records_by_path["fail.md"] if getattr(r, "event", None) == "file_failed"
+    )
+    assert fail_record.error == "Simulated translation failure"
+
+    # Unrelated log records (e.g. "Starting sync for repo ...") must not
+    # spuriously gain event/path/error attributes.
+    other_records = [r for r in caplog.records if getattr(r, "path", None) is None]
+    assert any("Starting sync" in r.getMessage() for r in other_records)
+    for r in other_records:
+        assert not hasattr(r, "event")
 
 
 # ---------------------------------------------------------------------------
@@ -624,7 +698,8 @@ def test_sync_empty_repo_no_md_files(tmp_path: Path) -> None:
 
 
 def test_sync_translation_failure_isolated(tmp_path: Path) -> None:
-    """If one file's translation raises, other files still succeed."""
+    """If one file's translation raises, other files still succeed and the
+    failed file gets an error-only cache record."""
     repo_dir = tmp_path / "src-repo"
     _init_repo_with_files(
         repo_dir,
@@ -656,10 +731,14 @@ def test_sync_translation_failure_isolated(tmp_path: Path) -> None:
     # translate_file should have been called 3 times (all files attempted)
     assert mock_translator.translate_file.call_count == 3
 
-    # "fail.md" should NOT be in cache
-    assert "fail.md" not in result_cache.get("test-repo", {})
+    # "fail.md" gets an error-only record (present, but no blob_hash --
+    # never successfully translated).
+    repo_cache = result_cache.get("test-repo", {})
+    assert "fail.md" in repo_cache
+    assert "blob_hash" not in repo_cache["fail.md"]
+    assert repo_cache["fail.md"]["last_error"]["message"]
 
-    # "ok.md" and "also_ok.md" SHOULD be in cache
+    # "ok.md" and "also_ok.md" SHOULD be in cache with full records
     assert "ok.md" in result_cache.get("test-repo", {})
     assert "also_ok.md" in result_cache.get("test-repo", {})
 

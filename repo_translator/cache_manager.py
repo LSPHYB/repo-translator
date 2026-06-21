@@ -7,12 +7,23 @@ Schema reference: repo-translator-design.md §3.2 (CacheManager) and §4.2
       "<repo_name>": {
         "<file_path>": {
           "blob_hash": "<git blob sha>",
-          "translated_at": "<ISO8601 timestamp string>"
+          "translated_at": "<ISO8601 timestamp string>",
+          "last_error": {                                  # optional
+            "message": "<str(exception) from the last failed attempt>",
+            "occurred_at": "<ISO8601 timestamp string>"
+          }
         },
         ...
       },
       ...
     }
+
+`last_error` is purely additive: it is written by `record_error()` when a
+file's most recent translation attempt failed, and is silently dropped the
+next time that file succeeds (`update()` replaces the whole per-file record
+wholesale). A record may therefore have `last_error` only (file has never
+succeeded), or both `blob_hash`/`translated_at` AND `last_error` (file
+succeeded once but is failing on a later attempt against a newer blob hash).
 
 Design notes:
 - `get_changed_files` always restricts its result to `.md` files, regardless
@@ -124,4 +135,22 @@ def update(
     """
     repo_cache = cache.setdefault(repo_name, {})
     repo_cache[file_path] = {"blob_hash": blob_hash, "translated_at": translated_at}
+    return cache
+
+
+def record_error(cache: dict, repo_name: str, file_path: str, message: str, occurred_at: str) -> dict:
+    """Record that the most recent attempt to translate `file_path` failed.
+
+    Mutates and returns `cache`. Does NOT touch `blob_hash`/`translated_at`
+    on an existing record (if the file succeeded before, its last-known-good
+    blob_hash/translated_at are preserved alongside the new `last_error` --
+    `get_changed_files` still correctly reports it as changed because the
+    cached `blob_hash` no longer matches the current one). If the file has
+    never succeeded, this creates a record containing only `last_error` (no
+    `blob_hash` key), which `get_changed_files` also correctly treats as
+    changed (`record.get("blob_hash")` is `None`, never matches).
+    """
+    repo_cache = cache.setdefault(repo_name, {})
+    record = repo_cache.setdefault(file_path, {})
+    record["last_error"] = {"message": message, "occurred_at": occurred_at}
     return cache

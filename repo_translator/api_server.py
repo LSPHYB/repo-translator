@@ -30,6 +30,7 @@ from pydantic import BaseModel
 from repo_translator import cache_manager, git_manager, sync
 from repo_translator import scheduler as scheduler_module
 from repo_translator.cli import _find_repo_by_name, _infer_repo_name, _is_git_repo, _is_url
+from repo_translator.sync import _is_excluded
 from repo_translator.config import AppConfig, RepoConfig, load_config, save_config
 
 _background_scheduler: BackgroundScheduler | None = None
@@ -100,14 +101,27 @@ class _LogBroadcastHandler(logging.Handler):
     """
 
     def emit(self, record: logging.LogRecord) -> None:
-        payload = json.dumps(
-            {
-                "time": datetime.now(timezone.utc).isoformat(),
-                "level": record.levelname,
-                "logger": record.name,
-                "message": record.getMessage(),
-            }
-        )
+        data = {
+            "time": datetime.now(timezone.utc).isoformat(),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        # `sync.py`'s per-file log calls attach `event`/`path`/(`error`) via
+        # `extra=` (see _process_one_file) so the desktop frontend's
+        # running/error file-status overlay can key off them -- included
+        # here only when present so every other log line's JSON shape stays
+        # byte-identical to before this field was added.
+        event = getattr(record, "event", None)
+        if event is not None:
+            data["event"] = event
+        path = getattr(record, "path", None)
+        if path is not None:
+            data["path"] = path
+        error = getattr(record, "error", None)
+        if error is not None:
+            data["error"] = error
+        payload = json.dumps(data)
         _log_queue.put_nowait(payload)
 
 
@@ -207,7 +221,14 @@ def list_repos() -> list[dict]:
                 "kind": "managed" if repo.is_managed else "external",
                 "branch": repo.branch,
                 "last_sync": max(timestamps) if timestamps else None,
-                "file_count": len(repo_cache),
+                # Count only records with a `translated_at` (i.e. files that
+                # have genuinely been translated at least once) -- NOT
+                # `len(repo_cache)`, which would also count error-only
+                # records created by `cache_manager.record_error` for files
+                # that have only ever failed (see sync.py's `_process_one_file`
+                # failure path). `timestamps` above is already filtered this
+                # way, so just reuse its length.
+                "file_count": len(timestamps),
             }
         )
     return result
@@ -275,6 +296,66 @@ def delete_repo(name: str) -> None:
 
     cfg.repos = [r for r in cfg.repos if r.name != name]
     save_config(cfg)
+
+
+@app.get("/repos/{name}/files")
+def list_repo_files(name: str) -> list[dict]:
+    """Per-file metadata for one tracked repo's `.md` files: `status`
+    (`"synced"` if the cached blob_hash matches the current one, else
+    `"pending"`), `last_sync` (the cached `translated_at`, if any), and
+    `error` (the file's persisted `last_error.message`, if any).
+
+    Never returns `status: "running"` -- that's a frontend-only overlay
+    sourced from the `/logs` WebSocket's `file_start`/`file_translated`/
+    `file_failed` events, not from this read-only REST snapshot. A file can
+    be `"pending"` AND carry a non-null `error` simultaneously (failed last
+    attempt, still due for retry) -- that's correct, not a bug.
+
+    Read-only: resolves the repo's local checkout path the same way
+    `git_manager.clone_or_pull` does, but never clones/pulls. If the repo
+    has never been synced (no local checkout / `.git` dir yet), returns `[]`
+    rather than shelling out to `git` on a nonexistent path.
+    """
+    cfg = load_config()
+    try:
+        repo_config = _find_repo_by_name(cfg, name)
+    except click.ClickException as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    if repo_config.is_external:
+        repo_path = Path(repo_config.path).expanduser()  # type: ignore[arg-type]
+    else:
+        repo_path = (
+            Path(cfg.output.base_dir).expanduser() / "repos" / repo_config.name
+        )
+
+    if not (repo_path / ".git").exists():
+        return []
+
+    file_blob_map = git_manager.get_file_blob_map(repo_path)
+    md_files = git_manager.list_md_files(file_blob_map)
+
+    exclude_patterns = cfg.output.exclude
+    if exclude_patterns:
+        md_files = [f for f in md_files if not _is_excluded(f, exclude_patterns)]
+
+    cache = cache_manager.load(cache_manager.DEFAULT_CACHE_PATH)
+    repo_cache = cache.get(name, {})
+
+    result = []
+    for path in md_files:
+        record = repo_cache.get(path)
+        synced = record is not None and record.get("blob_hash") == file_blob_map[path]
+        last_error = record.get("last_error") if record is not None else None
+        result.append(
+            {
+                "path": path,
+                "status": "synced" if synced else "pending",
+                "last_sync": record.get("translated_at") if record is not None else None,
+                "error": last_error.get("message") if last_error is not None else None,
+            }
+        )
+    return result
 
 
 @app.post("/repos/{name}/sync")

@@ -225,6 +225,28 @@ export function deleteRepo(name: string): Promise<void> {
 }
 
 // -----------------------------------------------------------------------
+// GET /repos/{name}/files
+// -----------------------------------------------------------------------
+
+/**
+ * REST-derived per-file status. Note this never includes "running" -- the
+ * REST endpoint is a point-in-time snapshot derived from cache.json, with
+ * no visibility into an in-flight ThreadPoolExecutor future on the backend.
+ * "running" is a frontend-only overlay sourced from the `/logs` WebSocket's
+ * `file_start`/`file_translated`/`file_failed` events (see ReposScreen.tsx).
+ */
+export interface RepoFileItem {
+  path: string;
+  status: "pending" | "synced";
+  last_sync: string | null;
+  error: string | null;
+}
+
+export function getRepoFiles(name: string): Promise<RepoFileItem[]> {
+  return request<RepoFileItem[]>(`/repos/${encodeURIComponent(name)}/files`);
+}
+
+// -----------------------------------------------------------------------
 // POST /repos/{name}/sync, /repos/{name}/files/{path}/sync,
 // /repos/sync-all, /repos/sync-all/cancel
 // -----------------------------------------------------------------------

@@ -8,7 +8,13 @@ from unittest.mock import patch
 
 import pytest
 
-from repo_translator.cache_manager import get_changed_files, load, save, update
+from repo_translator.cache_manager import (
+    get_changed_files,
+    load,
+    record_error,
+    save,
+    update,
+)
 
 
 def test_load_returns_empty_dict_when_file_missing(tmp_path: Path) -> None:
@@ -306,6 +312,86 @@ def test_update_preserves_other_files_and_repos() -> None:
         "blob_hash": "hashX",
         "translated_at": "tX",
     }
+
+
+def test_record_error_creates_error_only_record_for_never_succeeded_file() -> None:
+    cache: dict = {}
+
+    result = record_error(
+        cache, "langchain", "docs/guide.md", "boom", "2026-06-21T10:00:00Z"
+    )
+
+    assert result == {
+        "langchain": {
+            "docs/guide.md": {
+                "last_error": {"message": "boom", "occurred_at": "2026-06-21T10:00:00Z"}
+            }
+        }
+    }
+    # Mutates and returns the same object.
+    assert result is cache
+    # No blob_hash key at all -- get_changed_files must treat this as changed.
+    assert "blob_hash" not in cache["langchain"]["docs/guide.md"]
+
+
+def test_record_error_preserves_existing_blob_hash_and_translated_at() -> None:
+    cache = {
+        "langchain": {
+            "docs/guide.md": {
+                "blob_hash": "old_hash",
+                "translated_at": "2026-06-12T10:30:00Z",
+            }
+        }
+    }
+
+    record_error(cache, "langchain", "docs/guide.md", "timeout", "2026-06-21T10:00:00Z")
+
+    record = cache["langchain"]["docs/guide.md"]
+    assert record["blob_hash"] == "old_hash"
+    assert record["translated_at"] == "2026-06-12T10:30:00Z"
+    assert record["last_error"] == {
+        "message": "timeout",
+        "occurred_at": "2026-06-21T10:00:00Z",
+    }
+
+
+def test_record_error_then_get_changed_files_reports_file_as_changed() -> None:
+    """A file with only an error record (never successfully translated) must
+    still be reported as 'changed' by get_changed_files, since its blob_hash
+    never matches anything."""
+    cache: dict = {}
+    record_error(cache, "langchain", "docs/guide.md", "boom", "2026-06-21T10:00:00Z")
+
+    file_blob_map = {"docs/guide.md": "hash1"}
+    changed = get_changed_files("langchain", file_blob_map, cache)
+
+    assert changed == ["docs/guide.md"]
+
+
+def test_record_error_overwrites_previous_error_message() -> None:
+    cache: dict = {}
+    record_error(cache, "langchain", "docs/guide.md", "first failure", "t1")
+    record_error(cache, "langchain", "docs/guide.md", "second failure", "t2")
+
+    assert cache["langchain"]["docs/guide.md"]["last_error"] == {
+        "message": "second failure",
+        "occurred_at": "t2",
+    }
+
+
+def test_update_after_record_error_clears_stale_last_error() -> None:
+    """A subsequent successful translation must clear any stale last_error,
+    since update() replaces the whole per-file record wholesale."""
+    cache: dict = {}
+    record_error(cache, "langchain", "docs/guide.md", "boom", "t1")
+
+    update(cache, "langchain", "docs/guide.md", "hash1", "t2")
+
+    assert cache["langchain"]["docs/guide.md"] == {
+        "blob_hash": "hash1",
+        "translated_at": "t2",
+    }
+    assert "last_error" not in cache["langchain"]["docs/guide.md"]
 
 
 def test_end_to_end_first_translation_then_partial_rechange(tmp_path: Path) -> None:

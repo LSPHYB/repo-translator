@@ -132,7 +132,7 @@ def sync_repo(
     translator = create_translator(app_config.translator)
     concurrency = app_config.sync.concurrency
 
-    results: list[tuple[str, bool]] = []
+    results: list[tuple[str, bool, str | None]] = []
 
     with ThreadPoolExecutor(max_workers=concurrency) as executor:
         future_to_path = {}
@@ -161,16 +161,16 @@ def sync_repo(
             for future in as_completed(future_to_path, timeout=600):
                 file_path = future_to_path[future]
                 try:
-                    success = future.result()
-                    results.append((file_path, success))
-                except Exception:
+                    success, error_message = future.result()
+                    results.append((file_path, success, error_message))
+                except Exception as exc:
                     logger.warning(
                         "Unexpected error processing %r in repo %r",
                         file_path,
                         repo_config.name,
                         exc_info=True,
                     )
-                    results.append((file_path, False))
+                    results.append((file_path, False, str(exc)))
         except TimeoutError:
             logger.warning(
                 "Sync repo %r: timed out waiting for futures to complete",
@@ -188,16 +188,22 @@ def sync_repo(
             for f in remaining:
                 f.cancel()
 
-    # 5. Update cache for successfully processed files
+    # 5. Update cache for successfully processed files; record an error-only
+    # entry for failed ones (cache_manager.record_error) so the desktop API's
+    # per-file status endpoint has somewhere to read the failure reason from.
     now = datetime.now(timezone.utc).isoformat()
     succeeded = 0
-    for file_path, success in results:
+    for file_path, success, error_message in results:
         if success:
             blob_hash = file_blob_map[file_path]
             cache = cache_manager.update(
                 cache, repo_config.name, file_path, blob_hash, now
             )
             succeeded += 1
+        else:
+            cache = cache_manager.record_error(
+                cache, repo_config.name, file_path, error_message or "", now
+            )
 
     logger.info(
         "Sync complete for repo %r: %d file(s) processed, %d succeeded",
@@ -266,12 +272,14 @@ def _process_one_file(
     translator: BaseTranslator,
     glossary: list[GlossaryEntry],
     output_suffix: str,
-) -> bool:
-    """Translate *file_path* and write output files. Returns True on success.
+) -> tuple[bool, str | None]:
+    """Translate *file_path* and write output files.
 
-    On any failure (read error, translation error, write error) logs a warning
-    and returns False so the caller can skip the cache update for this file
-    without affecting other files.
+    Returns a ``(success, error_message)`` tuple: ``(True, None)`` on
+    success, ``(False, str(exc))`` on any failure (read error, translation
+    error, write error). Every failure case also logs a warning so the
+    caller can skip the cache update for this file (recording the error
+    instead, see ``sync_repo``) without affecting other files.
     """
 
     # Read source
@@ -279,20 +287,34 @@ def _process_one_file(
     try:
         source_content = source_file.read_text(encoding="utf-8")
     except OSError as exc:
-        logger.warning("Failed to read %r: %s", file_path, exc)
-        return False
+        logger.warning(
+            "Failed to read %r: %s",
+            file_path,
+            exc,
+            extra={"event": "file_failed", "path": file_path, "error": str(exc)},
+        )
+        return False, str(exc)
 
     # Parse -> embed markers -> translate -> extract -> splice
     try:
-        logger.info("Translating %r ...", file_path)
+        logger.info(
+            "Translating %r ...",
+            file_path,
+            extra={"event": "file_start", "path": file_path},
+        )
         blocks = parse_blocks(source_content)
         marked = embed_markers(source_content, blocks)
         translated_marked = translator.translate_file(marked, glossary)
         translations = extract_translations(translated_marked)
         translated_content = splice(source_content, blocks, translations)
     except Exception as exc:
-        logger.warning("Translation failed for %r: %s", file_path, exc)
-        return False
+        logger.warning(
+            "Translation failed for %r: %s",
+            file_path,
+            exc,
+            extra={"event": "file_failed", "path": file_path, "error": str(exc)},
+        )
+        return False, str(exc)
 
     # Compute output paths: docs/guide.md -> docs/guide_zh.md
     assert file_path.endswith(".md"), (
@@ -310,7 +332,17 @@ def _process_one_file(
         dest_original.parent.mkdir(parents=True, exist_ok=True)
         dest_original.write_text(source_content, encoding="utf-8")
     except OSError as exc:
-        logger.warning("Failed to write output for %r: %s", file_path, exc)
-        return False
+        logger.warning(
+            "Failed to write output for %r: %s",
+            file_path,
+            exc,
+            extra={"event": "file_failed", "path": file_path, "error": str(exc)},
+        )
+        return False, str(exc)
 
-    return True
+    logger.info(
+        "Translated %r",
+        file_path,
+        extra={"event": "file_translated", "path": file_path},
+    )
+    return True, None

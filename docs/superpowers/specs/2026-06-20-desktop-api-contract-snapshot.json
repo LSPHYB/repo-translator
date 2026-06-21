@@ -179,6 +179,51 @@
         }
       }
     },
+    "/repos/{name}/files": {
+      "get": {
+        "summary": "List Repo Files",
+        "description": "Per-file metadata for one tracked repo's `.md` files: `status`\n(`\"synced\"` if the cached blob_hash matches the current one, else\n`\"pending\"`), `last_sync` (the cached `translated_at`, if any), and\n`error` (the file's persisted `last_error.message`, if any).\n\nNever returns `status: \"running\"` -- that's a frontend-only overlay\nsourced from the `/logs` WebSocket's `file_start`/`file_translated`/\n`file_failed` events, not from this read-only REST snapshot. A file can\nbe `\"pending\"` AND carry a non-null `error` simultaneously (failed last\nattempt, still due for retry) -- that's correct, not a bug.\n\nRead-only: resolves the repo's local checkout path the same way\n`git_manager.clone_or_pull` does, but never clones/pulls. If the repo\nhas never been synced (no local checkout / `.git` dir yet), returns `[]`\nrather than shelling out to `git` on a nonexistent path.",
+        "operationId": "list_repo_files_repos__name__files_get",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "title": "Response List Repo Files Repos  Name  Files Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/repos/{name}/sync": {
       "post": {
         "summary": "Sync Repo Endpoint",
@@ -422,7 +467,7 @@
     "source_reference": "repo_translator/api_server.py, health() function (as of commit at time of this snapshot). Verify against current source if this file appears stale."
   },
   "x-ws-logs-contract": {
-    "_comment": "Hand-documented because OpenAPI/Swagger has no schema coverage for WebSocket payloads. This route (WS /logs) is absent from the 'paths' object above for that reason -- FastAPI's openapi.json generation does not include @app.websocket routes at all. The shape below was read directly from repo_translator/api_server.py's _LogBroadcastHandler.emit method (captured 2026-06-20, re-verified unchanged on re-capture triggered by /health schema change), not inferred or guessed.",
+    "_comment": "Hand-documented because OpenAPI/Swagger has no schema coverage for WebSocket payloads. This route (WS /logs) is absent from the 'paths' object above for that reason -- FastAPI's openapi.json generation does not include @app.websocket routes at all. The shape below was read directly from repo_translator/api_server.py's _LogBroadcastHandler.emit method (captured 2026-06-20, re-verified unchanged on re-capture triggered by /health schema change; re-verified again 2026-06-21 when the GET /repos/{name}/files endpoint was added and the event/path/error optional fields below were introduced), not inferred or guessed.",
     "route": "WS /logs",
     "direction": "server -> client only (the handler never reads incoming client messages for data; the server's logs_ws coroutine does call websocket.receive_text() in a loop, but purely to detect WebSocketDisconnect -- it ignores whatever text the client sends)",
     "message_format": "One NDJSON (newline-delimited JSON) line per log record, sent as a WebSocket text frame via websocket.send_text(). Every logging.LogRecord emitted by the 'repo_translator' logger (and its children) while a client is connected is broadcast to every currently-connected client.",
@@ -447,9 +492,30 @@
         "type": "string",
         "source": "record.getMessage()",
         "notes": "Already-formatted message (with %-style args substituted in); does not include exception tracebacks separately -- record.getMessage() only returns the log message text."
+      },
+      "event": {
+        "type": "string",
+        "optional": true,
+        "source": "getattr(record, 'event', None) -- set via logging's extra= kwarg on specific call sites in repo_translator/sync.py (_process_one_file)",
+        "example": "file_start | file_translated | file_failed",
+        "notes": "Present only on the per-file sync log lines that pass extra={'event': ...}; absent (key omitted entirely, not null) from every other log line. This is the signal the desktop frontend's ReposScreen 'running' file-status overlay subscribes to."
+      },
+      "path": {
+        "type": "string",
+        "optional": true,
+        "source": "getattr(record, 'path', None) -- same extra= mechanism as 'event', always present together with it",
+        "example": "docs/guide.md",
+        "notes": "Repo-relative file path the event/error refers to. Absent when 'event' is absent."
+      },
+      "error": {
+        "type": "string",
+        "optional": true,
+        "source": "getattr(record, 'error', None) -- only set on event == 'file_failed' log lines",
+        "example": "Translation failed for 'docs/guide.md': timeout",
+        "notes": "Only present on file_failed events; absent on file_start/file_translated and on every plain (non-event) log line."
       }
     },
-    "example_line": "{\"time\": \"2026-06-20T14:32:01.123456+00:00\", \"level\": \"INFO\", \"logger\": \"repo_translator.sync\", \"message\": \"Synced 3 files for repo 'example-repo'\"}",
+    "example_line": "{\"time\": \"2026-06-20T14:32:01.123456+00:00\", \"level\": \"INFO\", \"logger\": \"repo_translator.sync\", \"message\": \"Synced 3 files for repo 'example-repo'\"} -- plain log line, no event/path/error keys.\n{\"time\": \"2026-06-21T10:00:00.000000+00:00\", \"level\": \"WARNING\", \"logger\": \"repo_translator.sync\", \"message\": \"Translation failed for 'docs/guide.md': timeout\", \"event\": \"file_failed\", \"path\": \"docs/guide.md\", \"error\": \"timeout\"} -- per-file event line, additive fields present.",
     "source_reference": "repo_translator/api_server.py, class _LogBroadcastHandler, method emit (as of commit at time of this snapshot). Verify against current source if this file appears stale -- see Step 3 staleness note in docs/superpowers/plans/2026-06-20-desktop-frontend.md Task 0.5."
   }
 }
