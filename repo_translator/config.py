@@ -111,6 +111,16 @@ class AppConfig(BaseModel):
     output: OutputConfig = Field(default_factory=OutputConfig)
     repos: list[RepoConfig] = Field(default_factory=list)
     glossary: list[GlossaryEntry] = Field(default_factory=list)
+    # Optimistic-concurrency guard for the desktop API's GET/PUT /config
+    # round-trip (bumped by `save_config()` on every write). Scope limit:
+    # this is a single-process, load->compare->write check -- it protects
+    # against two screens in one running desktop app racing each other, NOT
+    # a cross-process compare-and-swap. The CLI `watch` daemon and the
+    # desktop sidecar both calling `save_config()` against the same
+    # config.yaml concurrently could still both read revision N and both
+    # write N+1 (TOCTOU); closing that would need a file lock or real CAS,
+    # out of scope for this plan.
+    revision: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -178,6 +188,7 @@ def save_config(config: AppConfig, path: Path | None = None) -> None:
     resolved = _expand_path(path)
     resolved.parent.mkdir(parents=True, exist_ok=True)
 
+    config.revision += 1
     data = config.model_dump(mode="json", exclude_none=True)
 
     fd, tmp_name = tempfile.mkstemp(

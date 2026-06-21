@@ -136,6 +136,53 @@ def test_put_config_rejects_invalid_payload(tmp_path: Path) -> None:
     assert resp.status_code == 400
 
 
+def test_put_config_bumps_revision_on_save(tmp_path: Path) -> None:
+    with _patch_config_path(tmp_path):
+        client = TestClient(app)
+        # `_patch_config_path`'s pre-seed save already bumped a fresh
+        # AppConfig's revision 0 -> 1, so the first GET here observes 1.
+        current = client.get("/config").json()
+        start_revision = current["revision"]
+
+        current["sync"]["interval_hours"] = 12
+        resp = client.put("/config", json=current)
+        assert resp.status_code == 200
+        assert resp.json()["revision"] == start_revision + 1
+
+        reloaded = client.get("/config").json()
+        assert reloaded["revision"] == start_revision + 1
+
+
+def test_put_config_stale_revision_returns_409_and_does_not_write(
+    tmp_path: Path,
+) -> None:
+    with _patch_config_path(tmp_path):
+        client = TestClient(app)
+        current = client.get("/config").json()
+        start_revision = current["revision"]
+
+        # First save succeeds and bumps the server's revision by one.
+        current["sync"]["interval_hours"] = 12
+        first = client.put("/config", json=current)
+        assert first.status_code == 200
+        assert first.json()["revision"] == start_revision + 1
+
+        before = client.get("/config").json()
+
+        # Second save still carries the now-stale revision the client
+        # originally read -- must be rejected, not silently applied.
+        stale_payload = dict(current)
+        stale_payload["revision"] = start_revision
+        stale_payload["sync"] = {**stale_payload["sync"], "interval_hours": 18}
+        resp = client.put("/config", json=stale_payload)
+        assert resp.status_code == 409
+
+        after = client.get("/config").json()
+        assert after == before
+        assert after["sync"]["interval_hours"] == 12
+        assert after["revision"] == start_revision + 1
+
+
 def _init_git_repo(repo_dir: Path, files: dict[str, str]) -> None:
     """Create a minimal git repo at *repo_dir* with the given files committed."""
     subprocess.run(["git", "init", "-q", "-b", "main", str(repo_dir)], check=True)

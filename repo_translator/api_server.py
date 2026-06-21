@@ -199,6 +199,20 @@ def put_config(payload: dict) -> dict:
         new_config = AppConfig.model_validate(payload)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # Optimistic-concurrency check: the client must have last read the
+    # config at the server's current revision. A mismatch means some other
+    # save (e.g. the other screen) landed since this client loaded its copy
+    # -- reject rather than silently overwriting those edits. See the scope
+    # note on `AppConfig.revision` in config.py for what this guard does and
+    # does not protect against.
+    current = load_config()
+    if new_config.revision != current.revision:
+        raise HTTPException(
+            status_code=409,
+            detail="配置已更新，请重新加载后重试",
+        )
+
     save_config(new_config)
     return new_config.model_dump(mode="json", exclude_none=True)
 
