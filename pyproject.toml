@@ -33,6 +33,12 @@ dev = [
 
 [project.scripts]
 repo-translator = "repo_translator.cli:main"
+repo-translator-sidecar = "repo_translator.api_server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["repo_translator"]
+
+[dependency-groups]
+dev = [
+    "pyinstaller>=6.21.0",
+]
