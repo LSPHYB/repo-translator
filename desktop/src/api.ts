@@ -172,6 +172,12 @@ export interface AppConfig {
   output: OutputConfig;
   repos: RepoConfig[];
   glossary: GlossaryEntry[];
+  // Optimistic-concurrency token (see AppConfig.revision in config.py).
+  // Callers must round-trip whatever value they last read via getConfig()
+  // back through putConfig() -- the server rejects a PUT whose `revision`
+  // doesn't match its current value with 409, rather than silently
+  // overwriting a save that landed from elsewhere in between.
+  revision: number;
 }
 
 export function getConfig(): Promise<AppConfig> {
