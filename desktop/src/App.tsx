@@ -4,30 +4,20 @@
  * `<script type="text/babel">` block). Renders AppShell with the active
  * screen as children and the console drawer as `consoleNode`.
  *
- * Screens are placeholders for now (Task 4-8 fill in Dashboard / Repos /
- * Glossary / Usage / Settings / Console with real content and `api.ts`
- * wiring) — this task only ports navigation, theme, and the console-drawer
- * toggle.
+ * All six screens (Dashboard / Repos / Glossary / Usage / Settings /
+ * Console) are wired to real `api.ts` calls as of Task 9 (Usage was the
+ * last screen still on `PlaceholderScreen`).
  */
 import { useEffect, useState } from 'react';
 import AppShell, { type PageId } from './components/AppShell';
 import DashboardScreen from './screens/DashboardScreen';
 import ReposScreen from './screens/ReposScreen';
 import GlossaryScreen from './screens/GlossaryScreen';
+import UsageScreen from './screens/UsageScreen';
 import SettingsScreen from './screens/SettingsScreen';
-import PlaceholderScreen from './screens/PlaceholderScreen';
 import ConsoleScreen, { ConsoleDrawer } from './screens/ConsoleScreen';
 
 export type Theme = 'light' | 'dark';
-
-const SCREEN_TITLES: Record<PageId, string> = {
-  dashboard: '仪表盘',
-  repos: '仓库管理',
-  glossary: '术语表',
-  usage: '用量统计',
-  settings: '系统设置',
-  logs: '调试台',
-};
 
 function App() {
   const [page, setPage] = useState<PageId>('dashboard');
@@ -42,7 +32,7 @@ function App() {
     dashboard: <DashboardScreen />,
     repos: <ReposScreen />,
     glossary: <GlossaryScreen />,
-    usage: <PlaceholderScreen title={SCREEN_TITLES.usage} />,
+    usage: <UsageScreen />,
     settings: <SettingsScreen />,
     logs: <ConsoleScreen />,
   };

@@ -315,6 +315,61 @@ export function cancelSyncAll(): Promise<CancelSyncAllResponse> {
 }
 
 // -----------------------------------------------------------------------
+// GET /usage
+// -----------------------------------------------------------------------
+
+export interface UsageDailyEntry {
+  date: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+}
+
+export interface UsageByEngineEntry {
+  engine: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  cost_usd: number;
+}
+
+export interface UsageByRepoEntry {
+  repo: string;
+  files: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  cost_usd: number;
+}
+
+export interface UsageTotals {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  cost_usd: number;
+  files: number;
+}
+
+/**
+ * Aggregated token-usage/cost stats backing UsageScreen. The backend
+ * (repo_translator/usage_manager.py + api_server.py's GET /usage) does all
+ * aggregation server-side -- `daily` is always exactly 30 entries (oldest
+ * first, ending today UTC, zero-filled), `by_engine`/`by_repo`/`totals` are
+ * all-time. There is no range selector: the mockup's 7d/30d/全部 Select was
+ * dropped for v1 since the backend always returns this fixed window.
+ */
+export interface UsageResponse {
+  daily: UsageDailyEntry[];
+  by_engine: UsageByEngineEntry[];
+  by_repo: UsageByRepoEntry[];
+  totals: UsageTotals;
+}
+
+export function getUsage(): Promise<UsageResponse> {
+  return request<UsageResponse>("/usage");
+}
+
+// -----------------------------------------------------------------------
 // WS /logs
 // -----------------------------------------------------------------------
 
