@@ -205,6 +205,7 @@ def test_get_config_never_exposes_raw_api_key(tmp_path: Path) -> None:
     body = resp.json()
     assert body["translator"]["api_key_set"] is True
     assert "api_key" not in body["translator"]
+    assert "super-secret" not in resp.text
 
 
 def test_put_config_omitted_api_key_preserves_stored_key(tmp_path: Path) -> None:
