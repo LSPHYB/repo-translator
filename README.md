@@ -188,6 +188,35 @@ repo-translator config --set translator.api_key=sk-xxx
 
 ---
 
+## 桌面应用（Repo Translator Desktop）
+
+`desktop/` 目录是一个 Tauri 2 + React 桌面 GUI，封装了与 CLI 相同的核心能力（仓库管理、增量翻译、Glossary、Console 日志、用量统计），面向不想用命令行的用户。
+
+桌面应用不是独立实现——它内部启动一个 sidecar 进程，运行的正是 `repo_translator/api_server.py`（一个 FastAPI 服务，提供 `/repos`、`/config`、`/usage`、`WS /logs` 等接口），GUI 通过这些接口驱动与 CLI 完全一致的同步/翻译逻辑，因此两者的配置文件（`config.yaml`）和缓存（`cache.json`）是共享、互通的。
+
+### 开发模式
+
+```bash
+cd desktop
+npm install
+npm run tauri dev
+```
+
+### 本机打包
+
+```bash
+cd desktop
+npm run tauri build
+```
+
+会先用 PyInstaller 把 `api_server.py` 编译为单文件 sidecar 可执行文件（规格见仓库根目录 `repo-translator-sidecar.spec`），再由 Tauri 打包成当前平台的安装包（macOS 为 `.app`/`.dmg`，并支持基于 Tauri updater 的自动更新）。
+
+### Windows 安装包
+
+项目尚未配置 Windows 平台的持续发布，但 `.github/workflows/desktop-windows-build.yml` 提供了一个手动触发（`workflow_dispatch`）的 GitHub Actions 工作流：在仓库 Actions 页面手动 Run workflow 后，会产出未签名的 `.msi`/`.exe` 安装包，可在该次运行的 Artifacts 中下载，仅用于内部测试分发。
+
+---
+
 ## 开发
 
 ```bash
