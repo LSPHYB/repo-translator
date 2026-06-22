@@ -14,3 +14,9 @@ dist/
 # verification (screenshots, console/page snapshots) -- scratch debugging
 # output, never a deliverable.
 .playwright-mcp/
+
+# Task 10's PyInstaller-built sidecar binary, copied into Tauri's
+# externalBin location with the target-triple suffix (Task 11). Built from
+# repo-translator-sidecar.spec; never commit the binary itself, only the
+# spec and the copy step in desktop/src-tauri/copy-sidecar.sh.
+desktop/src-tauri/binaries/

@@ -10,15 +10,22 @@
  * design doc, which may drift from the implementation.
  *
  * ---------------------------------------------------------------------------
- * Backend port resolution (dev-only fallback -- READ BEFORE CHANGING)
+ * Backend port resolution (READ BEFORE CHANGING)
  * ---------------------------------------------------------------------------
  * In the packaged Tauri app, the backend is spawned as a sidecar process
- * that prints `{"type": "startup", "port": <n>}` as its first stdout line;
- * Task 11 (not yet implemented) wires Rust to read that line and expose the
- * port to the frontend via `invoke("get_backend_port")`. That Tauri command
- * does not exist yet, so `resolveBackendPort()` below cannot call it yet.
+ * (desktop/src-tauri/src/lib.rs's `setup` hook, Task 11) that prints
+ * `{"type": "startup", "port": <n>}` as its first stdout line. Rust parses
+ * that line, stores the port in app state, and emits a `sidecar-ready`
+ * event once it's known (or with an `error` field if the sidecar failed to
+ * start). `initBackendPort()` below awaits that event once at app startup
+ * (via `App.tsx`'s startup gate) and caches the resolved port in the
+ * module-level `cachedPort` variable; `resolveBackendPort()` then returns
+ * it synchronously so every existing `baseUrl()`/`wsUrl()` call site stays
+ * synchronous -- callers never need to become async-aware individually.
  *
- * Until Task 11 lands, this module falls back to (in order):
+ * Outside Tauri (plain `npm run dev`, no Tauri shell), `"__TAURI_INTERNALS__"
+ * in window` is false and `initBackendPort()` is a no-op; `resolveBackendPort()`
+ * falls back to (in order):
  *   1. `import.meta.env.VITE_BACKEND_PORT` -- set this in `desktop/.env.local`
  *      (or export it before `npm run dev`) to point at a manually-started
  *      `uv run python -m repo_translator.api_server` instance during local
@@ -27,11 +34,9 @@
  *      `uvicorn repo_translator.api_server:app --port 8000` command
  *      mentioned in api_server.py's module docstring.
  *
- * Both fallback paths are DEV-ONLY and are never reachable in the packaged
- * app: once Task 11 adds the Tauri command, `resolveBackendPort()` must be
- * updated to call it first (e.g. gated on `"__TAURI_INTERNALS__" in window`)
- * and these fallbacks should only remain as the `npm run dev` (no Tauri
- * shell) escape hatch.
+ * Both fallback paths are DEV-ONLY and are never reached in the packaged
+ * app, where `cachedPort` is always set by the time any screen calls
+ * `baseUrl()`/`wsUrl()` (the startup gate blocks rendering until then).
  */
 
 // Vite exposes env vars prefixed VITE_ via import.meta.env at build time.
@@ -43,13 +48,64 @@ declare global {
 
 const DEV_FALLBACK_PORT = 8000;
 
+/** Set once by `initBackendPort()` when running inside Tauri. */
+let cachedPort: number | undefined;
+
+/**
+ * Resolves and caches the backend port. Must be called once, at app
+ * startup, before any `baseUrl()`/`wsUrl()`-based call -- see App.tsx's
+ * startup gate. Outside Tauri this is a no-op (resolveBackendPort() falls
+ * back to the dev-only env var / fixed port below).
+ *
+ * Inside Tauri, awaits the `sidecar-ready` event emitted by Rust once the
+ * sidecar's stdout startup handshake completes (or fires immediately if the
+ * event already arrived before this was called -- `once` replays nothing,
+ * so we also race a direct `get_backend_port` invoke in case the event
+ * landed before this listener was attached).
+ */
+export async function initBackendPort(): Promise<void> {
+  if (!("__TAURI_INTERNALS__" in window)) {
+    return;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  const { once } = await import("@tauri-apps/api/event");
+
+  interface SidecarReadyPayload {
+    port?: number;
+    error?: string;
+  }
+
+  const fromEvent = new Promise<number>((resolve, reject) => {
+    once<SidecarReadyPayload>("sidecar-ready", (event) => {
+      if (event.payload.port) {
+        resolve(event.payload.port);
+      } else {
+        reject(new Error(event.payload.error ?? "sidecar failed to start"));
+      }
+    });
+  });
+
+  // The Rust side may have already resolved the port (and emitted
+  // sidecar-ready) before this listener attached -- poll the command too so
+  // we don't wait for an event that already fired.
+  const fromCommand = (async () => {
+    for (;;) {
+      try {
+        return await invoke<number>("get_backend_port");
+      } catch {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+    }
+  })();
+
+  cachedPort = await Promise.race([fromEvent, fromCommand]);
+}
+
 function resolveBackendPort(): number {
-  // TODO(Task 11): once a Tauri `get_backend_port` command exists, prefer
-  // it here when running inside the packaged app. This function is
-  // currently synchronous because there is no async Tauri call to make yet;
-  // when that lands, every call site of `baseUrl()`/`wsUrl()` below will
-  // need to become async (or the port resolved once at app startup and
-  // cached) -- tracked as Task 11 follow-up, not done here.
+  if (cachedPort !== undefined) {
+    return cachedPort;
+  }
   const envPort = import.meta.env.VITE_BACKEND_PORT;
   if (envPort) {
     const parsed = Number(envPort);
