@@ -46,6 +46,7 @@ jobs:
 
       - name: Build Tauri app (unsigned, no updater artifacts)
         working-directory: desktop
+        shell: bash
         run: npm run tauri build -- --config "{\"bundle\":{\"createUpdaterArtifacts\":false}}"
 
       - name: Upload installer artifacts
