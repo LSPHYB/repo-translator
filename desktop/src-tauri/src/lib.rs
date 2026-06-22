@@ -123,9 +123,21 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_process::init())
         .manage(SidecarState::default())
         .invoke_handler(tauri::generate_handler![greet, get_backend_port])
         .setup(|app| {
+            // Auto-update (Task 12): tauri-plugin-updater's Builder needs the
+            // app handle at registration time, so unlike the other plugins
+            // above it's registered here inside `setup()` rather than via a
+            // top-level `.plugin(...)` call on `tauri::Builder` -- this is
+            // the pattern documented by Tauri 2's updater plugin docs.
+            // Desktop-only: the updater plugin doesn't target mobile.
+            #[cfg(desktop)]
+            {
+                let _ = app.handle().plugin(tauri_plugin_updater::Builder::new().build());
+            }
+
             let app_handle = app.handle().clone();
 
             let sidecar_command = app_handle

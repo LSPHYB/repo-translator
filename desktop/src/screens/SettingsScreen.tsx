@@ -37,11 +37,13 @@
  *   dropped "导入 CSV" button: omitted rather than faked.
  */
 import { useCallback, useEffect, useState } from 'react';
+import { check as checkForUpdate } from '@tauri-apps/plugin-updater';
+import { relaunch } from '@tauri-apps/plugin-process';
 import * as api from '../api';
 import { ApiError } from '../api';
 import type { AppConfig } from '../api';
 import PageHeader from '../components/PageHeader';
-import { Card, Select, Input, Slider } from '../design-system';
+import { Card, Select, Input, Slider, Button } from '../design-system';
 
 const STALE_REVISION_MESSAGE = '配置已更新，请重新加载后重试';
 
@@ -71,6 +73,36 @@ export default function SettingsScreen() {
 
   const [apiKeyDraft, setApiKeyDraft] = useState('');
   const [apiKeyTouched, setApiKeyTouched] = useState(false);
+
+  // Auto-update (Task 12): manual "检查更新" action only -- no on-startup
+  // check, per the task's framing (avoids an extra blocking network call in
+  // App.tsx's already-present sidecar-ready startup gate from Task 11).
+  const [updateStatus, setUpdateStatus] = useState<
+    | { phase: 'idle' }
+    | { phase: 'checking' }
+    | { phase: 'up-to-date' }
+    | { phase: 'downloading'; version: string }
+    | { phase: 'error'; message: string }
+  >({ phase: 'idle' });
+
+  async function handleCheckForUpdate() {
+    setUpdateStatus({ phase: 'checking' });
+    try {
+      const update = await checkForUpdate();
+      if (!update) {
+        setUpdateStatus({ phase: 'up-to-date' });
+        return;
+      }
+      setUpdateStatus({ phase: 'downloading', version: update.version });
+      await update.downloadAndInstall();
+      await relaunch();
+    } catch (err) {
+      setUpdateStatus({
+        phase: 'error',
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
 
   const load = useCallback(async () => {
     try {
@@ -238,6 +270,31 @@ export default function SettingsScreen() {
             unit="h"
             disabled={!config || saving}
           />
+        </div>
+      </Card>
+
+      <Card padding={22} style={{ marginTop: 18 }}>
+        <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 15, color: 'var(--text-primary)', marginBottom: 16 }}>
+          更新
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+          <Button
+            variant="secondary"
+            onClick={handleCheckForUpdate}
+            loading={updateStatus.phase === 'checking' || updateStatus.phase === 'downloading'}
+            disabled={updateStatus.phase === 'checking' || updateStatus.phase === 'downloading'}
+          >
+            检查更新
+          </Button>
+          <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+            {updateStatus.phase === 'checking' && '检查更新中…'}
+            {updateStatus.phase === 'up-to-date' && '已是最新版本'}
+            {updateStatus.phase === 'downloading' &&
+              `发现新版本 v${updateStatus.version}，下载安装中…`}
+            {updateStatus.phase === 'error' && (
+              <span style={{ color: 'var(--status-error)' }}>检查更新失败：{updateStatus.message}</span>
+            )}
+          </span>
         </div>
       </Card>
     </div>
