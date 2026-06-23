@@ -44,6 +44,7 @@ time. This spec file is the result of running:
     uv run pyinstaller --onefile --name repo-translator-sidecar \\
         --collect-all anthropic --collect-all openai --collect-all httpx \\
         --collect-all uvicorn --collect-all fastapi \\
+        --collect-all apscheduler --collect-all tzlocal --collect-all dateutil \\
         -p . repo_translator/api_server.py
 
 which PyInstaller writes to a `.spec` file on first run; this checked-in
@@ -56,7 +57,44 @@ from PyInstaller.utils.hooks import collect_all
 datas = []
 binaries = []
 hiddenimports = []
-for package in ("anthropic", "openai", "httpx", "uvicorn", "fastapi"):
+# Packages collected explicitly via `collect_all` (rather than relying on
+# PyInstaller's default dependency-graph walk). Two reasons a package lands
+# here:
+#
+#  1. Plugin/optional-feature packages that register submodules via dynamic
+#     imports PyInstaller's static analysis can't see: anthropic's
+#     bedrock/vertex/tools extras, openai's beta/types submodules, uvicorn's
+#     protocol/loop backends, fastapi's body parsers. This was the original
+#     set from the Task 10 brief.
+#
+#  2. apscheduler + its lazy-imported timezone helpers: APScheduler 3.x
+#     defers `import tzlocal` / `import dateutil` until a Scheduler is
+#     *instantiated* (inside `api_server.lifespan` -> `start_background`),
+#     not at module import time, so static analysis never traces them. On
+#     Windows especially, `tzlocal.get_localzone()` is also called lazily.
+#     Without these collected, the sidecar's `{"type":"startup","port":...}`
+#     line prints fine (all top-level imports succeeded, so the port
+#     handshake completes), but uvicorn's lifespan startup then crashes on
+#     the first `BackgroundScheduler()` -- before the HTTP server accepts a
+#     single request. The frontend consequently resolves the port, starts
+#     polling GET /health, and times out after 15s reporting "Backend did
+#     not finish loading config/cache before timing out." -- which looks
+#     like a network/connectivity failure but is actually a missing-import
+#     crash inside the sidecar. `click`/`pydantic` are *direct* top-level
+#     imports and don't need listing here; static analysis finds them.
+for package in (
+    "anthropic",
+    "openai",
+    "httpx",
+    "uvicorn",
+    "fastapi",
+    # APScheduler lazy-imports these at Scheduler instantiation time, so
+    # they're invisible to static analysis and must be collected explicitly
+    # -- see comment block above.
+    "apscheduler",
+    "tzlocal",
+    "dateutil",
+):
     pkg_datas, pkg_binaries, pkg_hiddenimports = collect_all(package)
     datas += pkg_datas
     binaries += pkg_binaries
