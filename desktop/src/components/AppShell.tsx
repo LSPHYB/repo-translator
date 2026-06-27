@@ -10,7 +10,8 @@
  * global.
  */
 import type { ReactNode } from 'react';
-import { TitleBar, NavRail, StatusBar, ThemeToggle } from '../design-system';
+import { NavRail, StatusBar, ThemeToggle } from '../design-system';
+import { useSyncContext } from '../SyncContext';
 import type { Theme } from '../App';
 
 export type PageId = 'dashboard' | 'repos' | 'glossary' | 'usage' | 'settings' | 'logs';
@@ -22,7 +23,7 @@ export interface AppShellProps {
   onTheme: (theme: Theme) => void;
   logsOpen: boolean;
   onToggleLogs: () => void;
-  children?: ReactNode;
+  pages: Record<PageId, ReactNode>;
   consoleNode?: ReactNode;
 }
 
@@ -51,7 +52,6 @@ const NAV_ITEMS: Array<{ id: PageId; label: string; icon: ReactNode; badge?: num
     id: 'repos',
     label: '仓库管理',
     icon: Ic(<path d="M3 6a2 2 0 012-2h5l2 2h7a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2z" />),
-    badge: 3,
   },
   {
     id: 'glossary',
@@ -96,7 +96,17 @@ const NAV_ITEMS: Array<{ id: PageId; label: string; icon: ReactNode; badge?: num
   },
 ];
 
-export default function AppShell({ page, onNav, theme, onTheme, logsOpen, onToggleLogs, children, consoleNode }: AppShellProps) {
+export default function AppShell({ page, onNav, theme, onTheme, logsOpen, onToggleLogs, pages, consoleNode }: AppShellProps) {
+  // The "仓库管理" nav badge reflects the live tracked-repo count from the
+  // shared SyncContext (it used to be a hardcoded `3` from the mockup). Hidden
+  // when zero so an empty install doesn't show a stale "0" chip.
+  const { repos } = useSyncContext();
+  const navItems = NAV_ITEMS.map((item) =>
+    item.id === 'repos'
+      ? { ...item, badge: repos.length > 0 ? repos.length : undefined }
+      : item,
+  );
+
   return (
     <div
       style={{
@@ -107,17 +117,27 @@ export default function AppShell({ page, onNav, theme, onTheme, logsOpen, onTogg
         borderRadius: 0,
       }}
     >
-      <TitleBar logoSrc="/src/assets/logo-mark.svg" version="v0.1.0" />
       <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
         <NavRail
-          items={NAV_ITEMS}
+          items={navItems}
           active={page}
           onSelect={(id: string) => onNav(id as PageId)}
           footer={<ThemeToggle theme={theme} onChange={(t: string) => onTheme(t as Theme)} />}
         />
         <main style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-          <div key={page} className="rt-page" style={{ flex: 1, overflow: 'auto', padding: 28 }}>
-            {children}
+          <div style={{ flex: 1, overflow: 'auto', position: 'relative' }}>
+            {(Object.entries(pages) as [PageId, ReactNode][]).map(([id, node]) => (
+              <div
+                key={id}
+                className={id === page ? 'rt-page' : undefined}
+                style={{
+                  display: id === page ? undefined : 'none',
+                  padding: 28,
+                }}
+              >
+                {node}
+              </div>
+            ))}
           </div>
           {logsOpen && consoleNode}
         </main>

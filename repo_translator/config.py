@@ -33,6 +33,7 @@ class RepoConfig(BaseModel):
     path: str | None = None
     branch: str | None = None
     added_at: datetime | None = None
+    output_dir: str | None = None
 
     @model_validator(mode="after")
     def _check_url_xor_path(self) -> "RepoConfig":

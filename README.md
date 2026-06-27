@@ -72,7 +72,7 @@ glossary:
     translation: ~
 
 repos:
-  # managed：工具会 clone 到 ~/.repo-translator/repos/<name>/，并在每次同步前 pull。
+  # managed：工具会 clone 到 ~/.repo-translator/output/repos/<name>/，并在每次同步前 pull。
   - name: langchain
     url: https://github.com/langchain-ai/langchain
     branch: main
@@ -152,7 +152,7 @@ repo-translator list
 repo-translator remove <name>
 ```
 
-将该仓库从配置中移除。对于 managed 仓库，会提示 `~/.repo-translator/repos/<name>/` 下的本地克隆可以手动删除（不会自动删除）；对于 external 仓库，不会触碰用户自己的任何文件。已生成的 `output/<name>/` 翻译产物不会被自动清理。
+将该仓库从配置中移除。对于 managed 仓库，会提示 `~/.repo-translator/output/repos/<name>/` 下的本地克隆可以手动删除（不会自动删除）；对于 external 仓库，不会触碰用户自己的任何文件。已生成的 `output/<name>/` 翻译产物不会被自动清理。
 
 ### `config` — 查看/修改配置
 

@@ -58,12 +58,14 @@
  *   `{output.base_dir}/{repo}/` in the OS file manager.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { revealItemInDir } from '@tauri-apps/plugin-opener';
+import { open as openDialog } from '@tauri-apps/plugin-dialog';
+import { revealItemInDir, openPath } from '@tauri-apps/plugin-opener';
 import * as api from '../api';
-import type { RepoListItem, LogMessage } from '../api';
+import type { LogMessage } from '../api';
 import PageHeader from '../components/PageHeader';
 import Modal from '../components/Modal';
 import { Button, Card, Tabs, Badge, StatusDot, Input, RepoCard, Spinner } from '../design-system';
+import { useSyncContext } from '../SyncContext';
 
 type FileStatus = 'pending' | 'running' | 'synced' | 'error';
 
@@ -114,47 +116,43 @@ const STATUS_DOT_TONE: Record<FileStatus, 'ok' | 'warn' | 'muted' | 'error'> = {
 };
 
 export default function ReposScreen() {
-  const [repos, setRepos] = useState<RepoListItem[]>([]);
-  const [outputBaseDir, setOutputBaseDir] = useState<string | null>(null);
+  // The repo list + progress + syncing state are shared via SyncContext (see
+  // DashboardScreen) so both pages stay in sync. `reloadRepos` re-fetches that
+  // shared list.
+  const {
+    repos,
+    reposError,
+    reloadRepos,
+    syncingRepos,
+    progress,
+    markSyncing,
+    markDone,
+  } = useSyncContext();
   const [selected, setSelected] = useState<string | null>(null);
   const [tab, setTab] = useState<'all' | 'pending'>('all');
   const [files, setFiles] = useState<FileRow[]>([]);
   const [filesError, setFilesError] = useState<string | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [kind, setKind] = useState<'managed' | 'external'>('managed');
   const [addValue, setAddValue] = useState('');
+  const [addOutputDir, setAddOutputDir] = useState('');
   const [addSubmitting, setAddSubmitting] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
-  const [repoSyncing, setRepoSyncing] = useState<Set<string>>(new Set());
   const [fileSyncing, setFileSyncing] = useState<Set<string>>(new Set());
+  const loadError = actionError ?? reposError;
 
-  const loadRepos = useCallback(async () => {
-    try {
-      const result = await api.listRepos();
-      setRepos(result);
-      setLoadError(null);
-      // Default-select the first repo once we have a list and nothing is
-      // selected yet (covers initial mount and the "selected repo was just
-      // deleted" case).
-      setSelected((prev) => {
-        if (prev && result.some((r) => r.name === prev)) return prev;
-        return result.length > 0 ? result[0].name : null;
-      });
-    } catch (err) {
-      setLoadError(err instanceof Error ? err.message : String(err));
-    }
-  }, []);
+  const loadRepos = reloadRepos;
 
+  // Default-select the first repo once a list is available and nothing valid
+  // is selected (covers initial mount and the "selected repo was just deleted"
+  // case). Keyed on the shared `repos` list so it reacts to add/remove.
   useEffect(() => {
-    loadRepos();
-    api
-      .getConfig()
-      .then((cfg) => setOutputBaseDir(cfg.output.base_dir))
-      .catch(() => {
-        /* best-effort -- only used for the "打开目录" tooltip/path, not load-blocking */
-      });
-  }, [loadRepos]);
+    setSelected((prev) => {
+      if (prev && repos.some((r) => r.name === prev)) return prev;
+      return repos.length > 0 ? repos[0].name : null;
+    });
+  }, [repos]);
 
   const loadFiles = useCallback(async (repoName: string) => {
     try {
@@ -191,11 +189,12 @@ export default function ReposScreen() {
   useEffect(() => {
     if (!selected) return undefined;
     const ws = api.connectLogs((log: LogMessage) => {
-      const { event, path } = log;
+      const { event, path, repo } = log;
       if (!event || !path) return;
-      // Events arrive for whichever repo is syncing; since file paths are
-      // repo-relative and not globally unique, only apply the overlay if a
-      // row with this path is currently displayed for the selected repo.
+      // Events now carry the originating `repo`; ignore any not for the repo
+      // currently being viewed (during a sync-all, file events for other repos
+      // would otherwise leak in -- repo-relative paths aren't globally unique).
+      if (repo && repo !== selected) return;
       setFiles((prev) => {
         if (!prev.some((f) => f.path === path)) return prev;
         return prev.map((f) => {
@@ -214,27 +213,32 @@ export default function ReposScreen() {
     return () => ws.close();
   }, [selected]);
 
+  async function handleBrowseOutputDir() {
+    const selected = await openDialog({ directory: true, multiple: false });
+    if (typeof selected === 'string') setAddOutputDir(selected);
+  }
+
   async function handleAddRepo() {
     if (!addValue.trim()) return;
     setAddSubmitting(true);
     setAddError(null);
     try {
-      const result = await api.addRepo({ url_or_path: addValue.trim() });
+      const result = await api.addRepo({
+        url_or_path: addValue.trim(),
+        output_dir: addOutputDir.trim() || undefined,
+      });
       setAdding(false);
       setAddValue('');
+      setAddOutputDir('');
       await loadRepos();
       setSelected(result.name);
       // "添加并同步" -- kick off a sync immediately so the user doesn't
       // have to take a second action to see results.
-      setRepoSyncing((prev) => new Set(prev).add(result.name));
+      markSyncing(result.name);
       try {
         await api.syncRepo(result.name);
       } finally {
-        setRepoSyncing((prev) => {
-          const next = new Set(prev);
-          next.delete(result.name);
-          return next;
-        });
+        markDone(result.name);
         await loadRepos();
         if (selectedRef.current === result.name) {
           await loadFiles(result.name);
@@ -252,22 +256,18 @@ export default function ReposScreen() {
       await api.deleteRepo(name);
       await loadRepos();
     } catch (err) {
-      setLoadError(err instanceof Error ? err.message : String(err));
+      setActionError(err instanceof Error ? err.message : String(err));
     }
   }
 
   async function handleSyncRepo(name: string) {
-    setRepoSyncing((prev) => new Set(prev).add(name));
+    markSyncing(name);
     try {
       await api.syncRepo(name);
     } catch (err) {
-      setLoadError(err instanceof Error ? err.message : String(err));
+      setActionError(err instanceof Error ? err.message : String(err));
     } finally {
-      setRepoSyncing((prev) => {
-        const next = new Set(prev);
-        next.delete(name);
-        return next;
-      });
+      markDone(name);
       await loadRepos();
       if (selectedRef.current === name) {
         await loadFiles(name);
@@ -292,12 +292,23 @@ export default function ReposScreen() {
   }
 
   async function handleOpenDir(repoName: string) {
-    if (!outputBaseDir) return;
-    const dir = `${outputBaseDir.replace(/\/$/, '')}/${repoName}`;
+    // Use the repo's *effective* output directory (resolved server-side --
+    // honors a per-repo output_dir, else base_dir/<name>). The old code always
+    // built base_dir/<name>, so repos with a custom output_dir opened the wrong
+    // place (and the base_dir fallback hit the opener path-scope error).
+    const repo = repos.find((r) => r.name === repoName);
+    const dir = repo?.output_dir;
+    if (!dir) return;
     try {
       await revealItemInDir(dir);
-    } catch (err) {
-      setLoadError(err instanceof Error ? err.message : String(err));
+    } catch {
+      // Directory may not exist yet (no files translated). Fall back to
+      // opening that directory directly so the user lands somewhere useful.
+      try {
+        await openPath(dir);
+      } catch (err2) {
+        setActionError(err2 instanceof Error ? err2.message : String(err2));
+      }
     }
   }
 
@@ -331,22 +342,28 @@ export default function ReposScreen() {
               <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>暂无跟踪仓库，点击「添加仓库」开始。</span>
             </Card>
           )}
-          {repos.map((repo) => (
-            <div key={repo.name} onClick={() => setSelected(repo.name)} style={{ cursor: 'pointer' }}>
-              <RepoCard
-                name={repo.name}
-                kind={repo.kind}
-                branch={repo.branch ?? undefined}
-                lastSync={repo.last_sync ?? '从未同步'}
-                files={repo.file_count}
-                syncing={repoSyncing.has(repo.name)}
-                onSync={() => handleSyncRepo(repo.name)}
-                onOpenDir={() => handleOpenDir(repo.name)}
-                onRemove={() => handleRemove(repo.name)}
-                style={selected === repo.name ? { outline: '2px solid var(--accent)', outlineOffset: 2 } : {}}
-              />
-            </div>
-          ))}
+          {repos.map((repo) => {
+            const prog = progress[repo.name];
+            const pct = prog && prog.total > 0 ? Math.round((prog.done / prog.total) * 100) : null;
+            return (
+              <div key={repo.name} onClick={() => setSelected(repo.name)} style={{ cursor: 'pointer' }}>
+                <RepoCard
+                  name={repo.name}
+                  kind={repo.kind}
+                  branch={repo.branch ?? undefined}
+                  lastSync={repo.last_sync ?? '从未同步'}
+                  files={repo.file_count}
+                  syncing={syncingRepos.has(repo.name) || syncingRepos.has('__sync_all__')}
+                  progress={pct}
+                  currentFile={prog?.currentFile ?? null}
+                  onSync={() => handleSyncRepo(repo.name)}
+                  onOpenDir={() => handleOpenDir(repo.name)}
+                  onRemove={() => handleRemove(repo.name)}
+                  style={selected === repo.name ? { outline: '2px solid var(--accent)', outlineOffset: 2 } : {}}
+                />
+              </div>
+            );
+          })}
         </div>
 
         <Card variant="solid" padding={0}>
@@ -410,7 +427,7 @@ export default function ReposScreen() {
       {adding && (
         <Modal
           title="添加仓库"
-          onClose={() => setAdding(false)}
+          onClose={() => { setAdding(false); setAddValue(''); setAddOutputDir(''); setAddError(null); }}
           footer={
             <>
               <Button variant="ghost" onClick={() => setAdding(false)} disabled={addSubmitting}>
@@ -477,6 +494,23 @@ export default function ReposScreen() {
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setAddValue(e.target.value)}
               />
             )}
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 6 }}>
+                输出目录（可选）
+              </div>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <Input
+                  mono
+                  placeholder="默认：使用全局设置"
+                  value={addOutputDir}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setAddOutputDir(e.target.value)}
+                  style={{ flex: 1 }}
+                />
+                <Button variant="secondary" onClick={handleBrowseOutputDir}>
+                  浏览…
+                </Button>
+              </div>
+            </div>
             {addError && <span style={{ fontSize: 12, color: 'var(--status-error)' }}>{addError}</span>}
           </div>
         </Modal>

@@ -586,12 +586,34 @@ def test_sync_logs_carry_structured_event_fields(
     )
     assert fail_record.error == "Simulated translation failure"
 
+    # Every per-file event also carries the originating repo so the desktop
+    # frontend can attribute it to the right repo card.
+    for records in records_by_path.values():
+        for r in records:
+            if hasattr(r, "event"):
+                assert r.repo == "test-repo"
+
+    # The sync lifecycle is bracketed by a `sync_start` (carrying the changed-
+    # file count as `total`) and a `sync_done`, both tagged with `repo` but no
+    # `path`. These drive the dashboard's per-repo progress bar.
+    lifecycle = {
+        getattr(r, "event"): r
+        for r in caplog.records
+        if getattr(r, "event", None) in {"sync_start", "sync_done"}
+    }
+    assert set(lifecycle) == {"sync_start", "sync_done"}
+    assert lifecycle["sync_start"].repo == "test-repo"
+    assert lifecycle["sync_start"].total == 2
+    assert lifecycle["sync_done"].repo == "test-repo"
+
     # Unrelated log records (e.g. "Starting sync for repo ...") must not
-    # spuriously gain event/path/error attributes.
-    other_records = [r for r in caplog.records if getattr(r, "path", None) is None]
-    assert any("Starting sync" in r.getMessage() for r in other_records)
-    for r in other_records:
-        assert not hasattr(r, "event")
+    # spuriously gain an event attribute.
+    plain_records = [
+        r
+        for r in caplog.records
+        if getattr(r, "path", None) is None and not hasattr(r, "event")
+    ]
+    assert any("Starting sync" in r.getMessage() for r in plain_records)
 
 
 # ---------------------------------------------------------------------------

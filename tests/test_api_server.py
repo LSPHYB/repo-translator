@@ -338,6 +338,33 @@ def test_list_repos_file_count_excludes_error_only_records(tmp_path: Path) -> No
     assert listed[0]["file_count"] == 1
 
 
+def test_list_repos_reports_effective_output_dir(tmp_path: Path) -> None:
+    """Each listed repo must carry its *effective* output directory so the
+    desktop "打开目录" action opens the real translation output -- not always
+    the global base_dir. A repo with a per-repo output_dir reports that
+    (expanded); one without reports base_dir/<name>. Regression test for the
+    bug where "打开目录" ignored per-repo output_dir entirely."""
+    base_repo = tmp_path / "base-repo"
+    custom_repo = tmp_path / "custom-repo"
+    _init_git_repo(base_repo, {"README.md": "# Hi\n"})
+    _init_git_repo(custom_repo, {"README.md": "# Hi\n"})
+    custom_out = tmp_path / "elsewhere" / "out"
+
+    with _patch_config_path(tmp_path):
+        client = TestClient(app)
+        client.post("/repos", json={"url_or_path": str(base_repo)})
+        client.post(
+            "/repos",
+            json={"url_or_path": str(custom_repo), "output_dir": str(custom_out)},
+        )
+
+        listed = {r["name"]: r for r in client.get("/repos").json()}
+
+    base_dir = tmp_path / "output"
+    assert listed["base-repo"]["output_dir"] == str(base_dir / "base-repo")
+    assert listed["custom-repo"]["output_dir"] == str(custom_out)
+
+
 def test_add_external_repo(tmp_path: Path) -> None:
     repo_dir = tmp_path / "my-project"
     _init_git_repo(repo_dir, {"README.md": "# Hi\n"})
@@ -398,6 +425,63 @@ def test_delete_repo_removes_from_config(tmp_path: Path) -> None:
         resp = client.delete("/repos/my-project")
         assert resp.status_code == 204
         assert client.get("/repos").json() == []
+
+
+def test_delete_managed_repo_removes_clone_and_allows_readd(tmp_path: Path) -> None:
+    """Deleting a managed repo removes its internal clone dir so the same repo
+    can be re-added later. Previously the leftover (non-empty) clone dir made
+    `git clone` fail with an 'already exists' error on re-add."""
+    clone_dest = tmp_path / "output" / "repos" / "repo"
+
+    def fake_clone(url: str, dest: Path) -> None:
+        # Simulate a real clone leaving a non-empty checkout behind.
+        Path(dest).mkdir(parents=True, exist_ok=True)
+        (Path(dest) / ".git").mkdir(exist_ok=True)
+        (Path(dest) / "README.md").write_text("# Hi\n", encoding="utf-8")
+
+    with _patch_config_path(tmp_path), patch(
+        "repo_translator.api_server.git_manager.clone", side_effect=fake_clone
+    ) as mock_clone:
+        client = TestClient(app)
+
+        assert client.post(
+            "/repos", json={"url_or_path": "https://github.com/example/repo"}
+        ).status_code == 201
+        assert clone_dest.exists()
+
+        assert client.delete("/repos/repo").status_code == 204
+        assert not clone_dest.exists()
+
+        # Re-add must succeed (clone is invoked again, no leftover-dir error).
+        resp = client.post(
+            "/repos", json={"url_or_path": "https://github.com/example/repo"}
+        )
+        assert resp.status_code == 201
+        assert mock_clone.call_count == 2
+
+
+def test_delete_repo_clears_translation_cache(tmp_path: Path) -> None:
+    """Deleting a repo must drop its translation-cache entry so re-adding the
+    same name re-translates from scratch instead of matching stale blob hashes
+    (which made every file look 'already translated' on re-add)."""
+    repo_dir = tmp_path / "my-project"
+    _init_git_repo(repo_dir, {"README.md": "# Hi\n"})
+
+    with _patch_config_path(tmp_path):
+        client = TestClient(app)
+        client.post("/repos", json={"url_or_path": str(repo_dir)})
+
+        # Simulate a prior successful translation leaving a cache entry.
+        cache = cache_manager.load(cache_manager.DEFAULT_CACHE_PATH)
+        cache["my-project"] = {
+            "README.md": {"blob_hash": "abc123", "translated_at": "2026-01-01T00:00:00Z"}
+        }
+        cache_manager.save(cache_manager.DEFAULT_CACHE_PATH, cache)
+
+        assert client.delete("/repos/my-project").status_code == 204
+
+        reloaded = cache_manager.load(cache_manager.DEFAULT_CACHE_PATH)
+        assert "my-project" not in reloaded
 
 
 def test_delete_repo_missing_returns_404(tmp_path: Path) -> None:

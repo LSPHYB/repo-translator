@@ -74,6 +74,26 @@ export default function SettingsScreen() {
   const [apiKeyDraft, setApiKeyDraft] = useState('');
   const [apiKeyTouched, setApiKeyTouched] = useState(false);
 
+  const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'ok' | 'error'>('idle');
+  const [testError, setTestError] = useState('');
+
+  async function handleTestConnection() {
+    setTestStatus('testing');
+    setTestError('');
+    try {
+      const result = await api.testConnection();
+      if (result.ok) {
+        setTestStatus('ok');
+      } else {
+        setTestStatus('error');
+        setTestError(result.error ?? '连接失败');
+      }
+    } catch (err) {
+      setTestStatus('error');
+      setTestError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   // Auto-update (Task 12): manual "检查更新" action only -- no on-startup
   // check, per the task's framing (avoids an extra blocking network call in
   // App.tsx's already-present sidecar-ready startup gate from Task 11).
@@ -243,6 +263,22 @@ export default function SettingsScreen() {
               style={{ gridColumn: '1 / -1' }}
               disabled={!config || saving}
             />
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 4 }}>
+            <Button
+              variant="secondary"
+              onClick={handleTestConnection}
+              loading={testStatus === 'testing'}
+              disabled={!config || saving || testStatus === 'testing'}
+            >
+              测试连接
+            </Button>
+            {testStatus === 'ok' && (
+              <span style={{ fontSize: 13, color: 'var(--status-ok)' }}>连接成功</span>
+            )}
+            {testStatus === 'error' && (
+              <span style={{ fontSize: 13, color: 'var(--status-error)' }}>{testError}</span>
+            )}
           </div>
         </div>
       </Card>

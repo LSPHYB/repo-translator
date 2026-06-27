@@ -27,6 +27,7 @@ import UsageScreen from './screens/UsageScreen';
 import SettingsScreen from './screens/SettingsScreen';
 import ConsoleScreen, { ConsoleDrawer } from './screens/ConsoleScreen';
 import { health, initBackendPort } from './api';
+import { SyncProvider } from './SyncContext';
 
 export type Theme = 'light' | 'dark';
 
@@ -139,17 +140,18 @@ function App() {
   };
 
   return (
-    <AppShell
-      page={page}
-      onNav={setPage}
-      theme={theme}
-      onTheme={setTheme}
-      logsOpen={logsOpen}
-      onToggleLogs={() => setLogsOpen((o) => !o)}
-      consoleNode={<ConsoleDrawer />}
-    >
-      {screens[page]}
-    </AppShell>
+    <SyncProvider>
+      <AppShell
+        page={page}
+        onNav={setPage}
+        theme={theme}
+        onTheme={setTheme}
+        logsOpen={logsOpen}
+        onToggleLogs={() => setLogsOpen((o) => !o)}
+        pages={screens}
+        consoleNode={<ConsoleDrawer />}
+      />
+    </SyncProvider>
   );
 }
 

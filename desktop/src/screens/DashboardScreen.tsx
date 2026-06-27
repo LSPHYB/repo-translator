@@ -34,11 +34,11 @@
  *     the same reason, leaving two real StatCards (tracked repos, file
  *     count) instead of the mockup's four.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useState } from 'react';
 import * as api from '../api';
-import type { RepoListItem } from '../api';
 import PageHeader from '../components/PageHeader';
 import { StatCard, Card, Button, RepoCard, StatusDot, Spinner } from '../design-system';
+import { useSyncContext } from '../SyncContext';
 
 function Ic(d: React.ReactNode) {
   return (
@@ -78,36 +78,30 @@ function PageHeaderStatus() {
 }
 
 export default function DashboardScreen() {
-  const [repos, setRepos] = useState<RepoListItem[]>([]);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [syncing, setSyncing] = useState(false);
-
-  const loadRepos = useCallback(async () => {
-    try {
-      const result = await api.listRepos();
-      setRepos(result);
-      setLoadError(null);
-    } catch (err) {
-      setLoadError(err instanceof Error ? err.message : String(err));
-    }
-  }, []);
-
-  useEffect(() => {
-    loadRepos();
-  }, [loadRepos]);
+  // Repo list, per-repo progress, and the syncing set all come from the shared
+  // SyncContext so the dashboard stays in lockstep with the Repos page (a repo
+  // added there shows up here; a sync started there animates here too).
+  const { repos, reposError, reloadRepos, syncingRepos, progress, markSyncing, markDone } =
+    useSyncContext();
+  const [actionError, setActionError] = useState<string | null>(null);
+  // The "全量同步" button reflects only a sync-all run; a single-repo sync
+  // (keyed by repo name) must not make it look busy. But "停止全部" cancels
+  // whatever is running (the backend uses one shared stop signal), so it stays
+  // enabled for any in-flight sync, single-repo or all.
+  const syncAllRunning = syncingRepos.has('__sync_all__');
+  const anySyncing = syncingRepos.size > 0;
+  const loadError = actionError ?? reposError;
 
   async function handleSyncAll() {
-    setSyncing(true);
+    markSyncing('__sync_all__');
+    setActionError(null);
     try {
       await api.syncAll();
     } catch (err) {
-      setLoadError(err instanceof Error ? err.message : String(err));
+      setActionError(err instanceof Error ? err.message : String(err));
     } finally {
-      setSyncing(false);
-      // Sync-all has finished (succeeded, failed, or was cancelled) by the
-      // time the request above resolves -- re-fetch so last_sync/file_count
-      // reflect the run that just happened.
-      await loadRepos();
+      markDone('__sync_all__');
+      await reloadRepos();
     }
   }
 
@@ -115,7 +109,20 @@ export default function DashboardScreen() {
     try {
       await api.cancelSyncAll();
     } catch (err) {
-      setLoadError(err instanceof Error ? err.message : String(err));
+      setActionError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function handleSyncRepo(name: string) {
+    markSyncing(name);
+    setActionError(null);
+    try {
+      await api.syncRepo(name);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      markDone(name);
+      await reloadRepos();
     }
   }
 
@@ -142,10 +149,10 @@ export default function DashboardScreen() {
             <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginTop: 4 }}>对所有跟踪仓库执行一次增量同步，或停止全部任务。</div>
           </div>
           <div style={{ display: 'flex', gap: 10 }}>
-            <Button variant="primary" icon={syncing ? <Spinner size={16} /> : playIcon} disabled={syncing} onClick={handleSyncAll}>
-              {syncing ? '同步中…' : '全量同步'}
+            <Button variant="primary" icon={syncAllRunning ? <Spinner size={16} /> : playIcon} disabled={syncAllRunning} onClick={handleSyncAll}>
+              {syncAllRunning ? '同步中…' : '全量同步'}
             </Button>
-            <Button variant="secondary" icon={stopIcon} disabled={!syncing} onClick={handleCancelAll}>
+            <Button variant="secondary" icon={stopIcon} disabled={!anySyncing} onClick={handleCancelAll}>
               停止全部
             </Button>
           </div>
@@ -164,16 +171,24 @@ export default function DashboardScreen() {
             <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>暂无跟踪仓库。前往「仓库管理」添加一个。</span>
           </Card>
         )}
-        {repos.map((repo) => (
-          <RepoCard
-            key={repo.name}
-            name={repo.name}
-            kind={repo.kind}
-            branch={repo.branch ?? undefined}
-            lastSync={repo.last_sync ?? '从未同步'}
-            files={repo.file_count}
-          />
-        ))}
+        {repos.map((repo) => {
+          const prog = progress[repo.name];
+          const pct = prog && prog.total > 0 ? Math.round((prog.done / prog.total) * 100) : null;
+          return (
+            <RepoCard
+              key={repo.name}
+              name={repo.name}
+              kind={repo.kind}
+              branch={repo.branch ?? undefined}
+              lastSync={repo.last_sync ?? '从未同步'}
+              files={repo.file_count}
+              syncing={syncingRepos.has(repo.name) || syncAllRunning}
+              progress={pct}
+              currentFile={prog?.currentFile ?? null}
+              onSync={() => handleSyncRepo(repo.name)}
+            />
+          );
+        })}
       </div>
     </div>
   );

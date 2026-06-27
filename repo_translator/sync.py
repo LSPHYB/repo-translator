@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -134,10 +134,18 @@ def sync_repo(
         len(changed_files),
         repo_config.name,
         len(md_files),
+        extra={
+            "event": "sync_start",
+            "repo": repo_config.name,
+            "total": len(changed_files),
+        },
     )
 
     # 4. Process files concurrently
-    output_base = base_dir / repo_config.name
+    if repo_config.output_dir:
+        output_base = Path(repo_config.output_dir).expanduser()
+    else:
+        output_base = base_dir / repo_config.name
     translator = create_translator(app_config.translator)
     concurrency = app_config.sync.concurrency
 
@@ -158,6 +166,7 @@ def sync_repo(
             future = executor.submit(
                 _process_one_file,
                 file_path=file_path,
+                repo_name=repo_config.name,
                 repo_path=repo_path,
                 output_base=output_base,
                 translator=translator,
@@ -166,12 +175,18 @@ def sync_repo(
             )
             future_to_path[future] = file_path
 
+        cancelled_mid_run = False
         try:
             for future in as_completed(future_to_path, timeout=600):
                 file_path = future_to_path[future]
                 try:
                     success, error_message, file_usage = future.result()
                     results.append((file_path, success, error_message, file_usage))
+                except CancelledError:
+                    # A queued future we cancelled below -- nothing ran, so
+                    # there is no result to record (and no cache update, so the
+                    # file stays "pending" for the next sync).
+                    continue
                 except Exception as exc:
                     logger.warning(
                         "Unexpected error processing %r in repo %r",
@@ -180,6 +195,23 @@ def sync_repo(
                         exc_info=True,
                     )
                     results.append((file_path, False, str(exc), TokenUsage(0, 0)))
+
+                # Honor a cancel that arrives mid-run: results from files that
+                # already finished are kept, but every not-yet-started future
+                # is cancelled so a stop takes effect promptly instead of
+                # waiting for the whole queue to drain. Files currently
+                # executing (up to `concurrency`) still run to completion.
+                if not cancelled_mid_run and should_cancel is not None and should_cancel():
+                    cancelled_mid_run = True
+                    n_cancelled = sum(
+                        1 for f in future_to_path if not f.done() and f.cancel()
+                    )
+                    logger.info(
+                        "Sync repo %r: cancel requested, dropped %d queued "
+                        "file(s)",
+                        repo_config.name,
+                        n_cancelled,
+                    )
         except TimeoutError:
             logger.warning(
                 "Sync repo %r: timed out waiting for futures to complete",
@@ -236,6 +268,7 @@ def sync_repo(
         repo_config.name,
         len(results),
         succeeded,
+        extra={"event": "sync_done", "repo": repo_config.name},
     )
 
     return cache
@@ -302,6 +335,7 @@ def _is_excluded(file_path: str, patterns: list[str]) -> bool:
 def _process_one_file(
     *,
     file_path: str,
+    repo_name: str,
     repo_path: Path,
     output_base: Path,
     translator: BaseTranslator,
@@ -331,7 +365,7 @@ def _process_one_file(
             "Failed to read %r: %s",
             file_path,
             exc,
-            extra={"event": "file_failed", "path": file_path, "error": str(exc)},
+            extra={"event": "file_failed", "repo": repo_name, "path": file_path, "error": str(exc)},
         )
         return False, str(exc), TokenUsage(0, 0)
 
@@ -341,7 +375,7 @@ def _process_one_file(
         logger.info(
             "Translating %r ...",
             file_path,
-            extra={"event": "file_start", "path": file_path},
+            extra={"event": "file_start", "repo": repo_name, "path": file_path},
         )
         blocks = parse_blocks(source_content)
         marked = embed_markers(source_content, blocks)
@@ -353,7 +387,7 @@ def _process_one_file(
             "Translation failed for %r: %s",
             file_path,
             exc,
-            extra={"event": "file_failed", "path": file_path, "error": str(exc)},
+            extra={"event": "file_failed", "repo": repo_name, "path": file_path, "error": str(exc)},
         )
         return False, str(exc), usage
 
@@ -377,13 +411,13 @@ def _process_one_file(
             "Failed to write output for %r: %s",
             file_path,
             exc,
-            extra={"event": "file_failed", "path": file_path, "error": str(exc)},
+            extra={"event": "file_failed", "repo": repo_name, "path": file_path, "error": str(exc)},
         )
         return False, str(exc), usage
 
     logger.info(
         "Translated %r",
         file_path,
-        extra={"event": "file_translated", "path": file_path},
+        extra={"event": "file_translated", "repo": repo_name, "path": file_path},
     )
     return True, None, usage

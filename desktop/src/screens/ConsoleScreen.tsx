@@ -36,12 +36,10 @@
  *   `!(r.l === 'DONE' && filters.INFO === false)` exactly.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import * as api from '../api';
 import type { LogMessage } from '../api';
+import { useSyncContext } from '../SyncContext';
 import PageHeader from '../components/PageHeader';
 import { Badge, ConsoleLine } from '../design-system';
-
-const LOG_BUFFER_CAP = 1000;
 
 /** Display level shown in the console UI -- not the same union as the real `LogMessage['level']`. */
 type DisplayLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR' | 'CRITICAL' | 'DONE';
@@ -82,23 +80,15 @@ function toLogLine(log: LogMessage): LogLine {
 }
 
 /**
- * Opens a `/logs` WebSocket connection and accumulates lines into a capped
- * buffer (last `LOG_BUFFER_CAP` lines). Closes the connection on unmount.
+ * Maps the shared raw log buffer (SyncContext owns the single `/logs`
+ * WebSocket; see SyncContext.tsx) into this screen's display rows. Reading the
+ * shared buffer -- rather than opening a fresh socket per surface -- means the
+ * bottom drawer shows the backlog accumulated before it was opened instead of
+ * starting empty.
  */
 function useLogBuffer(): LogLine[] {
-  const [lines, setLines] = useState<LogLine[]>([]);
-
-  useEffect(() => {
-    const ws = api.connectLogs((log: LogMessage) => {
-      setLines((prev) => {
-        const next = [...prev, toLogLine(log)];
-        return next.length > LOG_BUFFER_CAP ? next.slice(next.length - LOG_BUFFER_CAP) : next;
-      });
-    });
-    return () => ws.close();
-  }, []);
-
-  return lines;
+  const { logs } = useSyncContext();
+  return logs.map(toLogLine);
 }
 
 type FilterState = Partial<Record<FilterBucket, boolean>>;

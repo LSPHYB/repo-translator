@@ -31,6 +31,25 @@ The pipeline is a straight line: `cli.py` → `sync.py` → (`git_manager.py`, `
 - **`scheduler.py`** — `watch` mode via APScheduler `BlockingScheduler`. One independent `interval` job per repo; each job's body (load cache → `sync_repo` → save cache) is wrapped in try/except so one repo's failure never blocks the scheduler thread or sibling jobs. Does not self-daemonize — `contrib/systemd/` and `contrib/launchd/` hold deployment templates for that.
 - **`cli.py`** — click command group (`add`/`translate`/`watch`/`list`/`remove`/`config`). Wraps `sync.sync_repo()` calls in try/except → `click.ClickException` with an actionable message, since an unhandled translator-config error (e.g. missing API key) would otherwise surface as a raw traceback.
 
+## Desktop app build (Tauri)
+
+The desktop app lives in `desktop/`. The full release build sequence is:
+
+```bash
+# 1. Build Python sidecar (from repo root)
+uv run pyinstaller repo-translator-sidecar.spec --noconfirm
+
+# 2. Copy sidecar to Tauri binaries dir (suffix must match target triple)
+mkdir -p desktop/src-tauri/binaries
+cp dist/repo-translator-sidecar desktop/src-tauri/binaries/repo-translator-sidecar-aarch64-apple-darwin
+
+# 3. Build the .app only — DMG is NOT needed
+cd desktop && npm run tauri build -- --bundles app
+```
+
+**Only build `.app`, never `.dmg`.** The output is at
+`desktop/src-tauri/target/release/bundle/macos/desktop.app`.
+
 ## Testing conventions
 
 Tests that exercise `cli.py` or `scheduler.py` must never touch the real `~/.repo-translator/` — always patch `repo_translator.config.DEFAULT_CONFIG_PATH` and `repo_translator.cache_manager.DEFAULT_CACHE_PATH` to `tmp_path` locations (see `_setup_temp_paths` in `tests/test_cli.py`). Never call a real translation API in tests — patch `repo_translator.sync.create_translator` (or construct a fake `BaseTranslator`) to return fixed/fake translations; see `_make_fake_translate_file` in `tests/test_sync.py` for the canonical marker-preserving fake. `tests/test_e2e.py` drives the real CLI end-to-end against a real local git repo (added as an *external* repo via local path, so no network call is possible) with only the translator faked — follow that pattern for any new end-to-end coverage rather than mocking `sync_repo` itself.

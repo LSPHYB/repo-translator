@@ -254,6 +254,15 @@ export function putConfig(config: AppConfig): Promise<AppConfig> {
   });
 }
 
+export interface TestConnectionResult {
+  ok: boolean;
+  error?: string;
+}
+
+export function testConnection(): Promise<TestConnectionResult> {
+  return request<TestConnectionResult>("/config/test-connection", { method: "POST" });
+}
+
 // -----------------------------------------------------------------------
 // GET/POST /repos, DELETE /repos/{name}
 // -----------------------------------------------------------------------
@@ -262,6 +271,10 @@ export interface RepoListItem {
   name: string;
   kind: "managed" | "external";
   branch: string | null;
+  // Effective output directory resolved server-side (per-repo output_dir if
+  // set, else base_dir/<name>) -- this is where translated files actually
+  // land, so it's what "打开目录" must reveal.
+  output_dir: string;
   last_sync: string | null;
   file_count: number;
 }
@@ -273,6 +286,7 @@ export function listRepos(): Promise<RepoListItem[]> {
 export interface AddRepoRequest {
   url_or_path: string;
   name?: string;
+  output_dir?: string;
 }
 
 export interface AddRepoResponse {
@@ -442,6 +456,13 @@ export interface LogMessage {
   event?: string;
   path?: string;
   error?: string;
+  // `repo` is attached to every sync-lifecycle/per-file event
+  // ("sync_start" | "file_start" | "file_translated" | "file_failed" |
+  // "sync_done") so the frontend can attribute it to the right repo. `total`
+  // (changed-file count) is present only on "sync_start" and drives the
+  // per-repo progress bar's denominator.
+  repo?: string;
+  total?: number;
 }
 
 /**

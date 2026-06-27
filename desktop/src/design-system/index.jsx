@@ -226,12 +226,12 @@ export function TitleBar({
         <TitleBarLight c="#FEBC2E" onClick={onMinimize} />
         <TitleBarLight c="#28C840" />
       </div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginLeft: 6 }}>
+      <div data-tauri-drag-region style={{ display: 'flex', alignItems: 'center', gap: 9, marginLeft: 6 }}>
         {logoSrc && <img src={logoSrc} alt="" width={20} height={20} style={{ borderRadius: 5 }} />}
         <span style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 14, color: 'var(--text-primary)' }}>{title}</span>
         <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-tertiary)' }}>{version}</span>
       </div>
-      <div style={{ flex: 1 }} />
+      <div data-tauri-drag-region style={{ flex: 1 }} />
       {right}
       <div style={{ display: 'flex', gap: 2 }}>
         <TitleBarWinBtn onClick={onMinimize} label="最小化">

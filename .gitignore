@@ -10,6 +10,13 @@ venv/
 build/
 dist/
 
+# macOS Finder metadata.
+.DS_Store
+
+# Claude Code local agent state (worktrees, scratch) -- machine-local, never
+# a deliverable.
+.claude/
+
 # Playwright MCP browser-automation artifacts from manual click-through
 # verification (screenshots, console/page snapshots) -- scratch debugging
 # output, never a deliverable.

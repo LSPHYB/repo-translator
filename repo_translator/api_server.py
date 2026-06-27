@@ -14,6 +14,7 @@ import importlib.metadata
 import json
 import logging
 import queue
+import shutil
 import socket
 import threading
 from contextlib import asynccontextmanager
@@ -32,6 +33,7 @@ from repo_translator import scheduler as scheduler_module
 from repo_translator.cli import _find_repo_by_name, _infer_repo_name, _is_git_repo, _is_url
 from repo_translator.sync import _is_excluded
 from repo_translator.config import AppConfig, RepoConfig, load_config, save_config
+from repo_translator.translator.factory import create_translator
 
 _background_scheduler: BackgroundScheduler | None = None
 
@@ -41,7 +43,14 @@ async def lifespan(app: FastAPI):
     global _background_scheduler
 
     log_handler = _LogBroadcastHandler()
-    logging.getLogger("repo_translator").addHandler(log_handler)
+    rt_logger = logging.getLogger("repo_translator")
+    # The package logger has no level configured anywhere, so it would inherit
+    # root's default WARNING and silently drop every INFO-level line -- including
+    # sync.py's per-file file_start/file_translated events that the desktop log
+    # console and the per-file status overlay both rely on. Force INFO so those
+    # records actually reach the broadcast handler.
+    rt_logger.setLevel(logging.INFO)
+    rt_logger.addHandler(log_handler)
     drain_task = asyncio.create_task(_drain_log_queue())
 
     cfg = load_config()
@@ -84,6 +93,11 @@ app.add_middleware(
 
 _sync_all_lock = threading.Lock()
 _sync_all_running = False
+# A single shared "stop syncing" signal. Set by the cancel endpoint and
+# observed by BOTH the sync-all run and any single-repo sync (each clears it on
+# start, then passes `.is_set` as `should_cancel`). FastAPI runs these sync
+# endpoints on its threadpool, so the cancel request lands on a different
+# thread than the in-flight sync and this flag is how they communicate.
 _sync_all_cancel_event = threading.Event()
 
 _log_queue: queue.Queue[str] = queue.Queue()
@@ -121,6 +135,17 @@ class _LogBroadcastHandler(logging.Handler):
         error = getattr(record, "error", None)
         if error is not None:
             data["error"] = error
+        # `repo` (which repo a per-file/sync-lifecycle event belongs to) and
+        # `total` (changed-file count, only on the `sync_start` event) let the
+        # desktop frontend attribute file events to the right repo card and
+        # compute a real per-repo progress bar -- previously file paths alone
+        # were ambiguous across repos during a sync-all.
+        repo = getattr(record, "repo", None)
+        if repo is not None:
+            data["repo"] = repo
+        total = getattr(record, "total", None)
+        if total is not None:
+            data["total"] = total
         payload = json.dumps(data)
         _log_queue.put_nowait(payload)
 
@@ -194,12 +219,18 @@ def _serialize_config(cfg: AppConfig) -> dict:
     `put_config` for why this matters (don't rely on frontend discipline to
     avoid leaking a secret into DevTools/crash reports/error boundaries;
     close it at the source instead).
+
+    ``output.base_dir`` is expanded (``~`` → absolute home path) so the
+    frontend receives a fully resolved path it can pass directly to Tauri's
+    ``revealItemInDir`` without platform-specific tilde expansion.
     """
     data = cfg.model_dump(mode="json", exclude_none=True)
     translator = data.get("translator", {})
     translator.pop("api_key", None)
     translator["api_key_set"] = bool(cfg.translator.api_key)
     data["translator"] = translator
+    if "output" in data and "base_dir" in data["output"]:
+        data["output"]["base_dir"] = str(Path(data["output"]["base_dir"]).expanduser())
     return data
 
 
@@ -255,10 +286,31 @@ def put_config(payload: dict) -> dict:
     return _serialize_config(new_config)
 
 
+@app.post("/config/test-connection")
+def test_connection() -> dict:
+    """Test whether the configured translator engine can reach its API.
+
+    Makes a minimal ``translate_raw`` call ("Hi") to verify the API key and
+    network reachability without touching any repo files.  Returns
+    ``{"ok": true}`` on success or ``{"ok": false, "error": "..."}`` on any
+    failure (wrong key, network error, missing key, etc.).
+    """
+    cfg = load_config()
+    if not cfg.translator.api_key:
+        return {"ok": False, "error": "未配置 API key，请先在翻译引擎设置中填入 API Key"}
+    try:
+        translator = create_translator(cfg.translator)
+        translator.translate_raw("Hi")
+        return {"ok": True}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
 @app.get("/repos")
 def list_repos() -> list[dict]:
     cfg = load_config()
     cache = cache_manager.load(cache_manager.DEFAULT_CACHE_PATH)
+    base_dir = Path(cfg.output.base_dir).expanduser()
     result = []
     for repo in cfg.repos:
         repo_cache = cache.get(repo.name, {})
@@ -267,11 +319,21 @@ def list_repos() -> list[dict]:
             for v in repo_cache.values()
             if v.get("translated_at")
         ]
+        # Resolve the *effective* output directory the same way sync.py does
+        # (per-repo output_dir wins, else base_dir/<name>) so the desktop
+        # "打开目录" action opens where files were actually written -- it must
+        # not assume base_dir/<name> for repos that set a custom output_dir.
+        output_dir = (
+            str(Path(repo.output_dir).expanduser())
+            if repo.output_dir
+            else str(base_dir / repo.name)
+        )
         result.append(
             {
                 "name": repo.name,
                 "kind": "managed" if repo.is_managed else "external",
                 "branch": repo.branch,
+                "output_dir": output_dir,
                 "last_sync": max(timestamps) if timestamps else None,
                 # Count only records with a `translated_at` (i.e. files that
                 # have genuinely been translated at least once) -- NOT
@@ -289,6 +351,7 @@ def list_repos() -> list[dict]:
 class AddRepoRequest(BaseModel):
     url_or_path: str
     name: str | None = None
+    output_dir: str | None = None
 
 
 @app.post("/repos", status_code=201)
@@ -306,8 +369,14 @@ def add_repo(payload: AddRepoRequest) -> dict:
     output_base = Path(cfg.output.base_dir).expanduser()
 
     if _is_url(payload.url_or_path):
-        repo_config = RepoConfig(name=repo_name, url=payload.url_or_path, added_at=now)
+        repo_config = RepoConfig(name=repo_name, url=payload.url_or_path, added_at=now, output_dir=payload.output_dir)
         clone_dest = output_base / "repos" / repo_name
+        # `git clone` refuses to write into a non-empty directory. A leftover
+        # checkout (e.g. from a previous add that was later removed, or a
+        # crashed run) would otherwise make this fail with a misleading
+        # "already exists" error, so clear it first.
+        if clone_dest.exists():
+            shutil.rmtree(clone_dest, ignore_errors=True)
         try:
             git_manager.clone(payload.url_or_path, clone_dest)
         except git_manager.GitOperationError as exc:
@@ -328,7 +397,7 @@ def add_repo(payload: AddRepoRequest) -> dict:
                 status_code=400,
                 detail=f"'{local_path}' does not appear to be a git repository.",
             )
-        repo_config = RepoConfig(name=repo_name, path=str(local_path), added_at=now)
+        repo_config = RepoConfig(name=repo_name, path=str(local_path), added_at=now, output_dir=payload.output_dir)
 
     cfg.repos.append(repo_config)
     save_config(cfg)
@@ -342,12 +411,31 @@ def add_repo(payload: AddRepoRequest) -> dict:
 def delete_repo(name: str) -> None:
     cfg = load_config()
     try:
-        _find_repo_by_name(cfg, name)
+        repo_config = _find_repo_by_name(cfg, name)
     except click.ClickException as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     cfg.repos = [r for r in cfg.repos if r.name != name]
     save_config(cfg)
+
+    # Drop this repo's translation-cache entry. Without this, re-adding the
+    # same name later finds the old per-file blob hashes still cached; a fresh
+    # clone of the same repo has identical blob hashes, so the diff sees zero
+    # changed files and every file looks "already translated" -- the repo's
+    # docs never get re-translated and last_sync/file_count show stale values.
+    cache = cache_manager.load(cache_manager.DEFAULT_CACHE_PATH)
+    if name in cache:
+        del cache[name]
+        cache_manager.save(cache_manager.DEFAULT_CACHE_PATH, cache)
+
+    # Managed repos own an internal clone under <base>/repos/<name>. Remove it
+    # so re-adding the same repo later clones fresh -- git refuses to clone
+    # into a non-empty dir, which previously surfaced as an "already exists"
+    # error on re-add. External repos point at a user-owned checkout we must
+    # never delete.
+    if repo_config.is_managed:
+        clone_dest = Path(cfg.output.base_dir).expanduser() / "repos" / name
+        shutil.rmtree(clone_dest, ignore_errors=True)
 
 
 @app.get("/repos/{name}/files")
@@ -421,7 +509,16 @@ def sync_repo_endpoint(name: str) -> dict:
     cache = cache_manager.load(cache_manager.DEFAULT_CACHE_PATH)
     usage = usage_manager.load(usage_manager.DEFAULT_USAGE_PATH)
     before = len(cache.get(name, {}))
-    cache = sync.sync_repo(repo_config, cfg, cache, usage=usage)
+    # Make single-repo syncs cancellable via the same stop signal the
+    # "停止全部" button uses. Clear any stale cancel from a previous run first.
+    _sync_all_cancel_event.clear()
+    cache = sync.sync_repo(
+        repo_config,
+        cfg,
+        cache,
+        should_cancel=_sync_all_cancel_event.is_set,
+        usage=usage,
+    )
     cache_manager.save(cache_manager.DEFAULT_CACHE_PATH, cache)
     usage_manager.save(usage_manager.DEFAULT_USAGE_PATH, usage)
     after = len(cache.get(name, {}))
