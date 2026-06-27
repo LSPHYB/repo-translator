@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "repo-translator"
-version = "0.1.0"
+version = "0.2.0"
 description = "CLI tool to automatically translate Markdown docs in GitHub repos into Chinese."
 readme = "README.md"
 requires-python = ">=3.10"
